@@ -60,7 +60,10 @@ def _scalar(value: Any) -> str:
         return ""
     if hasattr(value, "items"):
         return ""
-    return str(value).strip()
+    text = str(value).strip()
+    if (len(text) >= 2) and text[0] == text[-1] and text[0] in {'"', "'"}:
+        text = text[1:-1].strip()
+    return text.replace("\ufeff", "").strip()
 
 
 def _secret(name: str, default: str = "") -> str:

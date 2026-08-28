@@ -358,6 +358,13 @@ def _google_credentials():
                 scopes=list(SHEETS_SCOPES),
             )
         except Exception as exc:
+            detail = str(exc)
+            if "invalid_client" in detail.lower():
+                raise DataServiceError(
+                    "Google Sheets OAuth client_id was not recognized. "
+                    "In Streamlit Secrets [google], copy client_id, client_secret, and refresh_token "
+                    "from the same local sheets_token.json (not Gmail token.json), and quote every value."
+                ) from exc
             raise DataServiceError(f"Google Sheets secret refresh failed: {exc}") from exc
 
     service_account = google_service_account_info()
