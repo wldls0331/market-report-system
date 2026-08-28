@@ -1,0 +1,11 @@
+streamlit[pdf]==1.59.2
+streamlit-pdf>=1.0.0
+reportlab>=4.2.0
+openpyxl>=3.1.0
+holidays>=0.40
+pymupdf>=1.24.0
+gspread>=6.0.0
+google-auth>=2.29.0
+google-auth-oauthlib>=1.2.0
+google-api-python-client>=2.127.0
+pywin32>=306; sys_platform == "win32"
