@@ -1,0 +1,210 @@
+"""INPUT sheet layout. Target cells come only from config.cell_mapping."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from config.cell_mapping import COMMENT_FIELDS, NUMBER_FIELDS, STRATEGY_FIELDS
+
+INPUT_SHEET_NAME = "INPUT"
+INPUT_KEY_COLUMN = 4  # D, hidden machine keys
+INPUT_HEADER = "MARKET REPORT INPUT"
+INPUT_NOTE = (
+    "Enter values in column B only. Leave a cell blank to show TBN. "
+    "Do not edit dated report sheets. Create / Update Report copies this INPUT into YY.MM.DD 보고자료."
+)
+
+# User-facing labels. Keys and target cells stay on NUMBER_FIELDS / COMMENT_FIELDS / STRATEGY_FIELDS.
+INPUT_NUMBER_LABELS: dict[str, str] = {
+    "paper_fo": "SING 0.5",
+    "paper_hsfo": "SING 380",
+    "paper_go": "SING Gasoil 10ppm",
+    "sg_vlsfo": "Singapore VLSFO",
+    "sg_hsfo": "Singapore HSFO",
+    "sg_lsmgo": "Singapore LSMGO",
+    "zs_vlsfo": "Zhoushan VLSFO",
+    "zs_hsfo": "Zhoushan HSFO",
+    "zs_lsmgo": "Zhoushan LSMGO",
+    "kr_vlsfo": "Korea VLSFO",
+    "kr_hsfo": "Korea HSFO",
+    "kr_lsmgo": "Korea LSMGO",
+    "jp_vlsfo": "Japan VLSFO",
+    "hdo_premium": "Hyundai Oilbank",
+    "sk_premium": "SK",
+    "soil_premium": "S-OIL",
+    "gs_premium": "GS",
+}
+
+BUNKER_INPUT_KEYS: tuple[str, ...] = (
+    "sg_vlsfo",
+    "sg_hsfo",
+    "sg_lsmgo",
+    "zs_vlsfo",
+    "zs_hsfo",
+    "zs_lsmgo",
+    "kr_vlsfo",
+    "kr_hsfo",
+    "kr_lsmgo",
+    "jp_vlsfo",
+)
+PREMIUM_INPUT_KEYS: tuple[str, ...] = (
+    "hdo_premium",
+    "sk_premium",
+    "soil_premium",
+    "gs_premium",
+)
+COMMENT_INPUT_KEYS: tuple[str, ...] = (
+    "comment_korea",
+    "comment_singapore",
+    "comment_china",
+    "comment_japan",
+)
+
+AUTO_REPORT_DATE = "report_date"
+AUTO_PRICING_MONTH = "pricing_month"
+AUTO_THIS_WEEK = "this_week_friday"
+AUTO_PREV_WEEK = "previous_week_friday"
+AUTO_TWO_WEEKS = "two_weeks_ago_friday"
+
+
+@dataclass(frozen=True)
+class InputRow:
+    kind: str  # title, note, spacer, section, field, auto
+    label: str = ""
+    key: str = ""
+    hint: str = ""
+    editable: bool = False
+
+
+def _number_by_key() -> dict[str, object]:
+    return {item.key: item for item in NUMBER_FIELDS}
+
+
+def _comment_by_key() -> dict[str, object]:
+    return {item.key: item for item in COMMENT_FIELDS}
+
+
+def _hint_for_number(key: str) -> str:
+    item = _number_by_key()[key]
+    return f"Report cell {item.cell}"
+
+
+def _hint_for_comment(key: str) -> str:
+    item = _comment_by_key()[key]
+    cells = ", ".join(item.cells)
+    extra = ""
+    if key == "comment_korea":
+        extra = " Also fills Worldwide Korea O31:O33."
+    return f"Report cells {cells}.{extra}"
+
+
+def input_layout() -> tuple[InputRow, ...]:
+    numbers = _number_by_key()
+    paper_keys = [item.key for item in NUMBER_FIELDS if item.section == "paper"]
+    rows: list[InputRow] = [
+        InputRow(kind="title", label=INPUT_HEADER, hint=INPUT_NOTE),
+        InputRow(kind="spacer"),
+        InputRow(kind="section", label="REPORT INFORMATION"),
+        InputRow(
+            kind="field",
+            label="Report Date",
+            key=AUTO_REPORT_DATE,
+            hint="YYYY-MM-DD. Sheet name becomes YY.MM.DD 보고자료",
+            editable=True,
+        ),
+        InputRow(
+            kind="auto",
+            label="Pricing Month",
+            key=AUTO_PRICING_MONTH,
+            hint="Auto from Report Date: day 1-24 same month, day 25-end next month",
+        ),
+        InputRow(kind="spacer"),
+        InputRow(kind="section", label="WEEKLY DATES"),
+        InputRow(
+            kind="auto",
+            label="This Week Friday",
+            key=AUTO_THIS_WEEK,
+            hint="Singapore working-day Friday of this week",
+        ),
+        InputRow(
+            kind="auto",
+            label="Previous Week Friday",
+            key=AUTO_PREV_WEEK,
+            hint="Chart data reference / historical date",
+        ),
+        InputRow(
+            kind="auto",
+            label="Two Weeks Ago Friday",
+            key=AUTO_TWO_WEEKS,
+            hint="Older chart historical date",
+        ),
+        InputRow(kind="spacer"),
+        InputRow(kind="section", label="PAPER / MOPS"),
+    ]
+    for key in paper_keys:
+        rows.append(
+            InputRow(
+                kind="field",
+                label=INPUT_NUMBER_LABELS[key],
+                key=key,
+                hint=_hint_for_number(key),
+                editable=True,
+            )
+        )
+    rows.append(InputRow(kind="spacer"))
+    rows.append(InputRow(kind="section", label="BUNKER MARKET PRICE"))
+    for key in BUNKER_INPUT_KEYS:
+        if key not in numbers:
+            continue
+        rows.append(
+            InputRow(
+                kind="field",
+                label=INPUT_NUMBER_LABELS[key],
+                key=key,
+                hint=_hint_for_number(key),
+                editable=True,
+            )
+        )
+    rows.append(InputRow(kind="spacer"))
+    rows.append(InputRow(kind="section", label="KOREA REFINERY PREMIUM"))
+    for key in PREMIUM_INPUT_KEYS:
+        rows.append(
+            InputRow(
+                kind="field",
+                label=INPUT_NUMBER_LABELS[key],
+                key=key,
+                hint=_hint_for_number(key),
+                editable=True,
+            )
+        )
+    rows.append(InputRow(kind="spacer"))
+    rows.append(InputRow(kind="section", label="MARKET COMMENT"))
+    comments = _comment_by_key()
+    for key in COMMENT_INPUT_KEYS:
+        item = comments[key]
+        rows.append(
+            InputRow(
+                kind="field",
+                label=item.label,
+                key=key,
+                hint=_hint_for_comment(key),
+                editable=True,
+            )
+        )
+    rows.append(InputRow(kind="spacer"))
+    rows.append(InputRow(kind="section", label="STRATEGY"))
+    for item in STRATEGY_FIELDS:
+        rows.append(
+            InputRow(
+                kind="field",
+                label=item.label,
+                key=item.key,
+                hint=f"Report cell {item.cell}",
+                editable=True,
+            )
+        )
+    return tuple(rows)
+
+
+def input_field_keys() -> tuple[str, ...]:
+    return tuple(row.key for row in input_layout() if row.kind in {"field", "auto"} and row.key)

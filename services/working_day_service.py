@@ -85,3 +85,27 @@ def format_report_title(date: dt.date) -> str:
 
 def format_pdf_filename(date: dt.date) -> str:
     return f"Weekly Report_Bunkering_{date.strftime('%y.%m.%d')}.pdf"
+
+
+def friday_of_week(date: dt.date) -> dt.date:
+    return week_starting_monday(date) + dt.timedelta(days=4)
+
+
+def last_working_day_of_week(date: dt.date) -> dt.date:
+    """Friday of that week, or the last Singapore working day if Friday is off."""
+    friday = friday_of_week(date)
+    monday = week_starting_monday(date)
+    cursor = friday
+    while cursor >= monday:
+        if is_singapore_working_day(cursor):
+            return cursor
+        cursor -= dt.timedelta(days=1)
+    return previous_singapore_working_day(monday)
+
+
+def weekly_fridays(report_date: dt.date) -> tuple[dt.date, dt.date, dt.date]:
+    """This week, previous week, and two weeks ago (Singapore Friday working days)."""
+    this_week = last_working_day_of_week(report_date)
+    previous_week = last_working_day_of_week(report_date - dt.timedelta(days=7))
+    two_weeks_ago = last_working_day_of_week(report_date - dt.timedelta(days=14))
+    return this_week, previous_week, two_weeks_ago

@@ -488,7 +488,7 @@ def generate_market_report(
         raise GenerateError(str(exc)) from exc
 
     data_reference_date = data_reference_date or previous_week_last_working_day(report_date)
-    month = pricing_month or default_pricing_month(data_reference_date)
+    month = pricing_month or default_pricing_month(report_date)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     excel_path = output_excel_path(report_date)

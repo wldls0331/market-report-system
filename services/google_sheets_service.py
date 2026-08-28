@@ -1,7 +1,6 @@
-"""Google Spreadsheet is the Market Report master: date sheets + Email Recipients.
+"""Google Spreadsheet is the Market Report master: INPUT + dated report sheets + Email Recipients.
 
-Report values are read from the same cells as the original Excel template.
-The old Market Data table is not used.
+The INPUT tab is the live source. Dated YY.MM.DD 보고자료 sheets are history.
 """
 
 from __future__ import annotations
@@ -24,6 +23,7 @@ from config.cell_mapping import (
     SHEET_NAME_PATTERN,
     STRATEGY_FIELDS,
 )
+from config.input_sheet import INPUT_SHEET_NAME
 from config.google_config import (
     credentials_from_refresh_token,
     google_credentials_file,
@@ -52,7 +52,7 @@ EMAIL_RECIPIENTS_SHEET = "Email Recipients"
 RECIPIENT_HEADERS: tuple[str, ...] = ("Type", "Name", "Email", "Active")
 SHEETS_READONLY_SCOPE = "https://www.googleapis.com/auth/spreadsheets.readonly"
 SHEETS_FULL_SCOPE = "https://www.googleapis.com/auth/spreadsheets"
-SHEETS_SCOPES = (SHEETS_READONLY_SCOPE,)
+SHEETS_SCOPES = (SHEETS_FULL_SCOPE,)
 LOCAL_RECIPIENTS_PATH = DATA_DIR / "local_email_recipients.json"
 REPORT_GRID_RANGE = "A1:AI80"
 SHEET_RE = re.compile(SHEET_NAME_PATTERN)
@@ -328,7 +328,14 @@ def _token_can_read_sheets(credentials) -> bool:
     return SHEETS_READONLY_SCOPE in scopes or SHEETS_FULL_SCOPE in scopes
 
 
-def _sheets_user_credentials(*, allow_browser: bool):
+def _token_can_write_sheets(credentials) -> bool:
+    scopes = set(credentials.scopes or [])
+    if not scopes:
+        return bool(getattr(credentials, "valid", False))
+    return SHEETS_FULL_SCOPE in scopes
+
+
+def _sheets_user_credentials(*, allow_browser: bool, require_write: bool = False):
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials as UserCredentials
     from google_auth_oauthlib.flow import InstalledAppFlow
@@ -339,6 +346,8 @@ def _sheets_user_credentials(*, allow_browser: bool):
     if token_path.exists():
         credentials = UserCredentials.from_authorized_user_file(str(token_path))
         if credentials and not _token_can_read_sheets(credentials):
+            credentials = None
+        if require_write and credentials and not _token_can_write_sheets(credentials):
             credentials = None
     if credentials and credentials.expired and credentials.refresh_token:
         credentials.refresh(Request())
@@ -381,12 +390,12 @@ def authorize_sheets() -> None:
             "credentials.json is not an OAuth Desktop Client file. "
             "Do not use a service account key as credentials.json for this setup."
         )
-    _sheets_user_credentials(allow_browser=True)
+    _sheets_user_credentials(allow_browser=True, require_write=True)
     if google_sheet_id():
-        _google_client()
+        _google_client(require_write=True)
 
 
-def _google_credentials():
+def _google_credentials(*, require_write: bool = False):
     client_id, client_secret, refresh_token = google_oauth_secrets()
     if client_id and client_secret and refresh_token:
         invalid = invalid_google_oauth_secret_keys()
@@ -446,13 +455,13 @@ def _google_credentials():
     if _is_service_account(payload):
         return ServiceCredentials.from_service_account_file(str(creds_path), scopes=list(SHEETS_SCOPES))
     if _is_oauth_client(payload):
-        return _sheets_user_credentials(allow_browser=False)
+        return _sheets_user_credentials(allow_browser=False, require_write=require_write)
     raise DataServiceError(
         "credentials.json is not a service account key or an OAuth Desktop/Web client file."
     )
 
 
-def _google_client():
+def _google_client(*, require_write: bool = False):
     sheet_id = google_sheet_id()
     if not sheet_id:
         raise DataServiceError("GOOGLE_SHEET_ID is not configured.")
@@ -462,9 +471,13 @@ def _google_client():
         raise DataServiceError(
             "Google Sheets libraries are missing. Install gspread and google-auth."
         ) from exc
-    credentials = _google_credentials()
+    credentials = _google_credentials(require_write=require_write)
     client = gspread.authorize(credentials)
     return client.open_by_key(sheet_id)
+
+
+def open_spreadsheet(*, require_write: bool = False):
+    return _google_client(require_write=require_write)
 
 
 def _recipients_worksheet(spreadsheet):
@@ -481,7 +494,7 @@ def find_report_worksheet(spreadsheet, report_date: dt.date):
         if worksheet.title == expected:
             return worksheet
     for worksheet in worksheets:
-        if worksheet.title == EMAIL_RECIPIENTS_SHEET:
+        if worksheet.title == EMAIL_RECIPIENTS_SHEET or worksheet.title == INPUT_SHEET_NAME:
             continue
         parsed = _parse_sheet_date(worksheet.title)
         if parsed == report_date:
@@ -493,7 +506,7 @@ def latest_report_sheet() -> tuple[dt.date, str] | None:
     titles = list_worksheet_titles()
     latest: tuple[dt.date, str] | None = None
     for title in titles:
-        if title == EMAIL_RECIPIENTS_SHEET:
+        if title in {EMAIL_RECIPIENTS_SHEET, INPUT_SHEET_NAME}:
             continue
         parsed = _parse_sheet_date(title)
         if parsed is None:

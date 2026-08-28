@@ -18,24 +18,27 @@ from config.google_config import (
 from config.paths import find_template
 from config.runtime import is_streamlit_cloud, supports_browser_oauth
 from services.data_service import DataServiceError
-from services.excel_service import GenerateError, generate_market_report, report_exists_for_date
+from services.excel_service import GenerateError, generate_market_report
 from services.gmail_service import GmailServiceError, authorize_gmail, gmail_status, send_email
 from services.google_sheets_service import (
     ReportData,
     active_recipient_emails,
     authorize_sheets,
-    latest_report_sheet,
     load_email_recipients_result,
-    load_report_data,
     sheets_status,
     spreadsheet_title,
+)
+from services.input_sheet_service import (
+    create_or_update_report_from_input,
+    dated_report_exists,
+    ensure_input_sheet,
+    load_input_data,
 )
 from services.pricing_month_service import YearMonth, default_pricing_month
 from services.working_day_service import (
     format_data_reference_display,
     format_pdf_filename,
     format_sheet_name,
-    previous_week_last_working_day,
     singapore_holiday_name,
     validate_report_date,
 )
@@ -71,10 +74,6 @@ PREMIUM_DRAFT_LABELS = {
     "soil_premium": "S-OIL",
     "gs_premium": "GS",
 }
-
-
-def _today() -> dt.date:
-    return dt.date.today()
 
 
 def _ui_sheet(name: str | None) -> str:
@@ -177,7 +176,7 @@ def _render_connection_status() -> None:
 
 def _render_draft(record: ReportData | None, report_date: dt.date, data_reference_date: dt.date) -> None:
     st.markdown("### Draft Preview")
-    st.caption("Market data is managed in Google Sheets.")
+    st.caption("Values are read from the Google Sheets INPUT tab. Blank cells display as TBN.")
     sheet_url = google_sheet_url()
     if sheet_url:
         st.link_button("Open Google Sheet", sheet_url)
@@ -192,10 +191,12 @@ def _render_draft(record: ReportData | None, report_date: dt.date, data_referenc
     with info_cols[1]:
         _show_field("Pricing Month", month.label())
         if record and record.sheet_name:
-            _show_field("Google Sheet", record.sheet_name)
+            _show_field("Target Sheet", record.sheet_name)
     with info_cols[2]:
-        _show_field("Last Updated", record.last_saved_label() if record else "")
-        _show_field("Updated By", record.updated_by if record else "")
+        extras = record.extra_cells if record else {}
+        _show_field("This Week Friday", extras.get("this_week_friday", ""))
+        _show_field("Previous Week Friday", extras.get("previous_week_friday", data_reference_date.isoformat()))
+        _show_field("Two Weeks Ago Friday", extras.get("two_weeks_ago_friday", ""))
 
     st.markdown("#### Paper / MOPS")
     paper_fields = [item for item in NUMBER_FIELDS if item.section == "paper"]
@@ -249,10 +250,7 @@ def main() -> None:
     st.title("Market Report")
     _sheets_ok, sheets_label = sheets_status()
     gmail_ok, gmail_label = gmail_status()
-    st.caption(
-        "Review Google Sheets data, generate Excel/PDF, then send email. "
-        "Market data is not edited in this app."
-    )
+    st.caption("Enter market data in the Google Sheets INPUT tab, then create the dated report here.")
     st.caption(f"Google Sheets: {sheets_label} · Gmail: {gmail_label}")
 
     _render_connection_status()
@@ -264,25 +262,36 @@ def main() -> None:
         st.error(str(exc))
         st.stop()
 
-    default_report_date = _today()
+    refresh_col, sheet_col = st.columns([1, 1])
+    with refresh_col:
+        if st.button("Refresh Data"):
+            if _sheets_ok:
+                try:
+                    ensure_input_sheet(refresh_auto=True)
+                except Exception:
+                    pass
+            st.rerun()
+    sheet_url = google_sheet_url()
+    with sheet_col:
+        if sheet_url:
+            st.link_button("Open Google Sheet", sheet_url)
+
+    record = None
+    load_error = None
     if _sheets_ok:
         try:
-            latest_available = latest_report_sheet()
-            if latest_available:
-                default_report_date = latest_available[0]
-        except Exception:
-            pass
+            record = load_input_data()
+        except DataServiceError as exc:
+            load_error = str(exc)
+            st.error(load_error)
+    else:
+        st.info("Connect Google Sheets to read the INPUT tab.")
 
-    top_left, top_mid = st.columns([1.2, 1])
-    with top_left:
-        report_date = st.date_input("Report Date", value=default_report_date, format="YYYY-MM-DD")
-        data_reference_date = previous_week_last_working_day(report_date)
-        st.markdown("**Data Reference Date**")
-        st.caption(
-            f"{format_data_reference_display(data_reference_date)} "
-            "(Previous Week's Last Working Day)"
-        )
+    if record is None:
+        st.stop()
 
+    report_date = record.report_date
+    data_reference_date = record.data_reference_date
     date_ok = True
     try:
         validate_report_date(report_date)
@@ -294,53 +303,19 @@ def main() -> None:
         elif singapore_holiday_name(report_date):
             st.info("Singapore public holidays cannot be used as Report Date.")
 
-    record = None
-    load_error = None
-    try:
-        record = load_report_data(report_date)
-    except DataServiceError as exc:
-        load_error = str(exc)
-        st.error(load_error)
-
-    pricing_month = _pricing_month_for(
-        record, record.data_reference_date if record else data_reference_date
-    )
-    with top_mid:
-        st.markdown("**Pricing Month**")
-        st.caption(pricing_month.label())
-
-    refresh_col, sheet_col = st.columns([1, 1])
-    with refresh_col:
-        if st.button("Refresh Data"):
-            st.rerun()
-    sheet_url = google_sheet_url()
-    with sheet_col:
-        if sheet_url:
-            st.link_button("Open Google Sheet", sheet_url)
+    st.markdown("**Report Date**")
+    st.write(report_date.isoformat())
+    st.caption(f"Target sheet: `{format_sheet_name(report_date)}`")
 
     report_exists = False
-    if date_ok:
-        try:
-            report_exists = report_exists_for_date(report_date)
-        except Exception:
-            report_exists = False
-        target_sheet = format_sheet_name(report_date)
-        if report_exists:
-            st.caption(f"Existing Excel sheet `{_ui_sheet(target_sheet)}` will be updated.")
-
-    if load_error is None and record is None:
-        latest = None
-        try:
-            latest = latest_report_sheet()
-        except DataServiceError:
-            latest = None
-        if latest:
-            st.info(
-                "No report sheet for this Report Date in Google Sheets. "
-                f"Latest available sheet: `{latest[1]}`"
-            )
-        else:
-            st.info("No report sheet for this Report Date in Google Sheets.")
+    try:
+        report_exists = dated_report_exists(report_date)
+    except Exception:
+        report_exists = False
+    if report_exists:
+        st.caption(f"Existing Google sheet `{_ui_sheet(format_sheet_name(report_date))}` will be updated.")
+    else:
+        st.caption("No sheet for this date yet. Create Report will copy the latest dated report sheet.")
 
     recipients_warning = None
     if _sheets_ok:
@@ -351,77 +326,67 @@ def main() -> None:
     if recipients_warning:
         st.warning(recipients_warning)
 
-    _render_draft(
-        record,
-        report_date,
-        record.data_reference_date if record else data_reference_date,
-    )
+    _render_draft(record, report_date, data_reference_date)
 
     st.markdown("---")
     st.markdown("### Report")
-    create_label = "Update Report" if report_exists else "Create Report"
-    create_clicked = st.button(create_label, type="primary", disabled=not date_ok)
+    create_clicked = st.button("Create / Update Report", type="primary", disabled=not date_ok)
     if create_clicked:
         if not date_ok:
             st.error("Report Date must be a Singapore working day.")
         else:
-            latest = None
-            try:
-                latest = load_report_data(report_date)
-            except DataServiceError as exc:
-                st.error(str(exc))
-            if latest is None:
-                st.error("No report sheet for this Report Date in Google Sheets.")
-            else:
-                spinner_msg = (
-                    "Updating the existing sheet and regenerating the PDF..."
-                    if report_exists
-                    else "Copying the Excel sheet and generating the PDF..."
-                )
-                with st.spinner(spinner_msg):
+            spinner_msg = (
+                "Updating the dated Google sheet and generating the PDF..."
+                if report_exists
+                else "Copying the latest dated sheet, applying INPUT, and generating the PDF..."
+            )
+            with st.spinner(spinner_msg):
+                try:
+                    sheet_name, google_updated = create_or_update_report_from_input(record)
+                    generate_month = _pricing_month_for(record, report_date)
+                    result = generate_market_report(
+                        report_date,
+                        record.inputs,
+                        export_pdf=True,
+                        pricing_month=generate_month,
+                        extra_cells=None,
+                        data_reference_date=data_reference_date,
+                    )
+                    expected_pdf = format_pdf_filename(report_date)
+                    pdf_path = str(result.pdf_path) if result.pdf_path else None
+                    if pdf_path and Path(pdf_path).name != expected_pdf:
+                        pdf_path = None
+                    to_list, cc_list = [], []
                     try:
-                        generate_month = _pricing_month_for(latest, latest.data_reference_date)
-                        result = generate_market_report(
-                            report_date,
-                            latest.inputs,
-                            export_pdf=True,
-                            pricing_month=generate_month,
-                            extra_cells=latest.extra_cells,
-                            data_reference_date=latest.data_reference_date,
-                        )
-                        expected_pdf = format_pdf_filename(report_date)
-                        pdf_path = str(result.pdf_path) if result.pdf_path else None
-                        if pdf_path and Path(pdf_path).name != expected_pdf:
-                            pdf_path = None
-                        to_list, cc_list = [], []
-                        try:
-                            to_list, cc_list = active_recipient_emails()
-                        except DataServiceError as exc:
-                            st.warning(str(exc))
-                        st.session_state["result"] = {
-                            "excel_path": str(result.excel_path),
-                            "pdf_path": pdf_path,
-                            "sheet_name": result.sheet_name,
-                            "previous_sheet": result.previous_sheet,
-                            "warnings": result.warnings,
-                            "pdf_page_count": result.pdf_page_count,
-                            "pricing_month": result.pricing_month,
-                            "is_update": result.is_update,
-                            "used_saved_at": latest.last_saved_label(),
-                            "data_reference_date": latest.data_reference_date.isoformat(),
-                            "report_date": report_date.isoformat(),
-                        }
-                        st.session_state["email_to"] = "\n".join(to_list)
-                        st.session_state["email_cc"] = "\n".join(cc_list)
-                        st.session_state["email_subject"] = default_subject(report_date)
-                        st.session_state["email_body"] = default_body(report_date)
-                        st.rerun()
-                    except GenerateError as exc:
-                        st.session_state.pop("result", None)
-                        st.error(str(exc))
-                    except Exception as exc:
-                        st.session_state.pop("result", None)
-                        st.error(f"Report generation failed: {exc}")
+                        to_list, cc_list = active_recipient_emails()
+                    except DataServiceError as exc:
+                        st.warning(str(exc))
+                    st.session_state["result"] = {
+                        "excel_path": str(result.excel_path),
+                        "pdf_path": pdf_path,
+                        "sheet_name": sheet_name,
+                        "previous_sheet": result.previous_sheet,
+                        "warnings": result.warnings,
+                        "pdf_page_count": result.pdf_page_count,
+                        "pricing_month": result.pricing_month,
+                        "is_update": google_updated,
+                        "data_reference_date": data_reference_date.isoformat(),
+                        "report_date": report_date.isoformat(),
+                    }
+                    st.session_state["email_to"] = "\n".join(to_list)
+                    st.session_state["email_cc"] = "\n".join(cc_list)
+                    st.session_state["email_subject"] = default_subject(report_date)
+                    st.session_state["email_body"] = default_body(report_date)
+                    st.rerun()
+                except DataServiceError as exc:
+                    st.session_state.pop("result", None)
+                    st.error(str(exc))
+                except GenerateError as exc:
+                    st.session_state.pop("result", None)
+                    st.error(str(exc))
+                except Exception as exc:
+                    st.session_state.pop("result", None)
+                    st.error(f"Report generation failed: {exc}")
 
     result = st.session_state.get("result")
     matching_result = bool(result) and result.get("report_date") == report_date.isoformat()
@@ -437,13 +402,10 @@ def main() -> None:
             extras.append(f"PDF {result['pdf_page_count']} page(s)")
         extra_note = (" · " + " · ".join(extras)) if extras else ""
         if result.get("is_update"):
-            st.caption(f"Updated sheet `{_ui_sheet(result['sheet_name'])}`{extra_note}")
+            st.caption(f"Updated Google sheet `{_ui_sheet(result['sheet_name'])}`{extra_note}")
         else:
-            st.caption(
-                f"Sheet `{_ui_sheet(result['previous_sheet'])}` → `{_ui_sheet(result['sheet_name'])}`{extra_note}"
-            )
-        if result.get("used_saved_at"):
-            st.caption(f"Generated from Google Sheets data last updated {result['used_saved_at']}")
+            st.caption(f"Created Google sheet `{_ui_sheet(result['sheet_name'])}`{extra_note}")
+        st.caption("PDF is generated from the dated report sheet, not from INPUT.")
         for warning in result.get("warnings") or []:
             st.warning(warning)
 
