@@ -28,8 +28,10 @@ from config.google_config import (
     credentials_from_refresh_token,
     google_credentials_file,
     google_oauth_secrets,
+    google_service_account_info,
     google_sheet_id,
     has_google_secret_oauth,
+    has_google_sheets_secrets,
     persist_oauth_token,
     sheets_token_file,
 )
@@ -237,7 +239,7 @@ def _is_oauth_client(payload: dict[str, Any]) -> bool:
 def sheets_status() -> tuple[bool, str]:
     if not google_sheet_id():
         return False, "Not Connected"
-    if has_google_secret_oauth():
+    if has_google_sheets_secrets():
         return True, "Connected"
     payload = _read_credentials_payload()
     if _is_service_account(payload):
@@ -323,7 +325,7 @@ def _sheets_user_credentials(*, allow_browser: bool):
 
 def authorize_sheets() -> None:
     """OAuth for Sheets only. Does not touch Gmail token.json."""
-    if has_google_secret_oauth():
+    if has_google_sheets_secrets():
         _google_client()
         return
     creds_path = google_credentials_file()
@@ -357,6 +359,18 @@ def _google_credentials():
             )
         except Exception as exc:
             raise DataServiceError(f"Google Sheets secret refresh failed: {exc}") from exc
+
+    service_account = google_service_account_info()
+    if service_account:
+        try:
+            from google.oauth2.service_account import Credentials as ServiceCredentials
+        except ImportError as exc:
+            raise DataServiceError(
+                "Google Sheets libraries are missing. Install gspread and google-auth."
+            ) from exc
+        return ServiceCredentials.from_service_account_info(
+            service_account, scopes=list(SHEETS_SCOPES)
+        )
 
     creds_path = google_credentials_file()
     if not creds_path.exists():

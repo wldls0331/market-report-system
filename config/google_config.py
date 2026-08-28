@@ -36,9 +36,31 @@ def _st_secrets():
     try:
         import streamlit as st
 
-        return getattr(st, "secrets", None)
+        return st.secrets
     except Exception:
         return None
+
+
+def _as_plain_dict(block: Any) -> dict[str, Any]:
+    if block is None:
+        return {}
+    if isinstance(block, str):
+        return {}
+    try:
+        return {str(key): value for key, value in block.items()}
+    except Exception:
+        try:
+            return dict(block)
+        except Exception:
+            return {}
+
+
+def _scalar(value: Any) -> str:
+    if value is None:
+        return ""
+    if hasattr(value, "items"):
+        return ""
+    return str(value).strip()
 
 
 def _secret(name: str, default: str = "") -> str:
@@ -46,10 +68,10 @@ def _secret(name: str, default: str = "") -> str:
     secrets = _st_secrets()
     if secrets is not None:
         try:
-            if name in secrets:
-                value = secrets[name]
-                if value is not None and str(value).strip() and not hasattr(value, "items"):
-                    return str(value).strip()
+            value = secrets[name]
+            text = _scalar(value)
+            if text:
+                return text
         except Exception:
             pass
     return str(os.environ.get(name, default) or default).strip()
@@ -60,20 +82,15 @@ def _section(name: str) -> dict[str, str]:
     if secrets is None:
         return {}
     try:
-        block = secrets[name]
+        block = secrets.get(name) if hasattr(secrets, "get") else secrets[name]
     except Exception:
-        return {}
-    try:
-        items = dict(block)
-    except Exception:
-        return {}
+        try:
+            block = secrets[name]
+        except Exception:
+            return {}
     result: dict[str, str] = {}
-    for key, value in items.items():
-        if value is None:
-            continue
-        if hasattr(value, "items"):
-            continue
-        text = str(value).strip()
+    for key, value in _as_plain_dict(block).items():
+        text = _scalar(value)
         if text:
             result[str(key)] = text
     return result
@@ -81,9 +98,14 @@ def _section(name: str) -> dict[str, str]:
 
 def google_sheet_id() -> str:
     section = _section("google")
-    if section.get("sheet_id"):
-        return section["sheet_id"]
-    return _secret("GOOGLE_SHEET_ID")
+    return (
+        section.get("sheet_id")
+        or section.get("spreadsheet_id")
+        or section.get("GOOGLE_SHEET_ID")
+        or _secret("GOOGLE_SHEET_ID")
+        or _secret("sheet_id")
+        or ""
+    )
 
 
 def google_sheet_url() -> str:
@@ -141,7 +163,26 @@ def _oauth_triplet(section_name: str) -> tuple[str, str, str]:
 
 
 def google_oauth_secrets() -> tuple[str, str, str]:
-    return _oauth_triplet("google")
+    section = _section("google")
+    client_id = (
+        section.get("client_id")
+        or _secret("GOOGLE_CLIENT_ID")
+        or _secret("GOOGLE_SHEETS_CLIENT_ID")
+        or ""
+    )
+    client_secret = (
+        section.get("client_secret")
+        or _secret("GOOGLE_CLIENT_SECRET")
+        or _secret("GOOGLE_SHEETS_CLIENT_SECRET")
+        or ""
+    )
+    refresh_token = (
+        section.get("refresh_token")
+        or _secret("GOOGLE_REFRESH_TOKEN")
+        or _secret("GOOGLE_SHEETS_REFRESH_TOKEN")
+        or ""
+    )
+    return client_id, client_secret, refresh_token
 
 
 def gmail_oauth_secrets() -> tuple[str, str, str]:
@@ -151,6 +192,62 @@ def gmail_oauth_secrets() -> tuple[str, str, str]:
 def has_google_secret_oauth() -> bool:
     client_id, client_secret, refresh_token = google_oauth_secrets()
     return bool(client_id and client_secret and refresh_token)
+
+
+def google_service_account_info() -> dict[str, Any] | None:
+    secrets = _st_secrets()
+    if secrets is None:
+        return None
+    candidates: list[Any] = []
+    for key in ("gcp_service_account", "google_service_account"):
+        try:
+            candidates.append(secrets[key])
+        except Exception:
+            continue
+    try:
+        raw_google = secrets["google"]
+        nested = _as_plain_dict(raw_google).get("service_account")
+        if nested is not None:
+            candidates.append(nested)
+    except Exception:
+        pass
+    for raw in candidates:
+        info = _as_plain_dict(raw)
+        email = str(info.get("client_email") or "").strip()
+        private_key = str(info.get("private_key") or "").replace("\\n", "\n").strip()
+        if not email or not private_key:
+            continue
+        info["client_email"] = email
+        info["private_key"] = private_key
+        info.setdefault("type", "service_account")
+        return info
+    return None
+
+
+def has_google_service_account_secret() -> bool:
+    return google_service_account_info() is not None
+
+
+def has_google_sheets_secrets() -> bool:
+    return bool(google_sheet_id()) and (
+        has_google_secret_oauth() or has_google_service_account_secret()
+    )
+
+
+def missing_google_sheets_secret_keys() -> list[str]:
+    missing: list[str] = []
+    if not google_sheet_id():
+        missing.append("[google].sheet_id")
+    if has_google_service_account_secret():
+        return missing
+    client_id, client_secret, refresh_token = google_oauth_secrets()
+    if not client_id:
+        missing.append("[google].client_id")
+    if not client_secret:
+        missing.append("[google].client_secret")
+    if not refresh_token:
+        missing.append("[google].refresh_token")
+    return missing
 
 
 def has_gmail_secret_oauth() -> bool:

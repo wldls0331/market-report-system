@@ -10,7 +10,7 @@ import streamlit as st
 
 from config.cell_mapping import NUMBER_FIELDS, SHEET_NAME_SUFFIX, STRATEGY_FIELDS
 from config.email_config import default_body, default_subject
-from config.google_config import google_sheet_url
+from config.google_config import google_sheet_url, missing_google_sheets_secret_keys
 from config.paths import find_template
 from config.runtime import is_streamlit_cloud, supports_browser_oauth
 from services.data_service import DataServiceError
@@ -156,7 +156,10 @@ def _render_connection_status() -> None:
                     except Exception as exc:
                         st.error(f"Google Sheets authorization failed: {exc}")
             else:
-                if is_streamlit_cloud():
+                missing = missing_google_sheets_secret_keys()
+                if missing:
+                    st.caption("Streamlit Secrets missing: " + ", ".join(missing))
+                elif is_streamlit_cloud():
                     st.caption("Add [google] sheet_id, client_id, client_secret, and refresh_token in Streamlit Secrets.")
                 else:
                     st.caption("Set GOOGLE_SHEET_ID in .env or Streamlit Secrets, then authorize Google Sheets.")
