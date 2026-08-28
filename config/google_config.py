@@ -66,6 +66,11 @@ def _scalar(value: Any) -> str:
     return text.replace("\ufeff", "").strip()
 
 
+def _compact_secret(value: Any) -> str:
+    """Strip quotes, BOM, and all whitespace from OAuth secret scalars."""
+    return "".join(_scalar(value).split())
+
+
 def _secret(name: str, default: str = "") -> str:
     _load_dotenv()
     secrets = _st_secrets()
@@ -107,13 +112,13 @@ def _google_section_value(key: str) -> str:
     try:
         google = secrets["google"]
         try:
-            text = _scalar(google[key])
+            text = _compact_secret(google[key])
             if text:
                 return text
         except Exception:
             pass
         try:
-            text = _scalar(getattr(google, key))
+            text = _compact_secret(getattr(google, key))
             if text:
                 return text
         except Exception:
@@ -121,7 +126,7 @@ def _google_section_value(key: str) -> str:
     except Exception:
         pass
     try:
-        text = _scalar(secrets[f"google.{key}"])
+        text = _compact_secret(secrets[f"google.{key}"])
         if text:
             return text
     except Exception:
@@ -253,6 +258,22 @@ def missing_google_sheets_secret_keys() -> list[str]:
     if not refresh_token:
         missing.append("[google].refresh_token")
     return missing
+
+
+def invalid_google_oauth_secret_keys() -> list[str]:
+    """Format checks only. Does not print secret values."""
+    errors: list[str] = []
+    client_id, _client_secret, refresh_token = google_oauth_secrets()
+    if client_id and not client_id.endswith(".apps.googleusercontent.com"):
+        errors.append(
+            "[google].client_id must be credentials.json -> installed.client_id "
+            "(ends with .apps.googleusercontent.com)"
+        )
+    if refresh_token and not refresh_token.startswith("1//"):
+        errors.append(
+            "[google].refresh_token must be sheets_token.json -> refresh_token"
+        )
+    return errors
 
 
 def has_gmail_secret_oauth() -> bool:

@@ -32,6 +32,7 @@ from config.google_config import (
     google_sheet_id,
     has_google_secret_oauth,
     has_google_sheets_secrets,
+    invalid_google_oauth_secret_keys,
     missing_google_sheets_secret_keys,
     persist_oauth_token,
     sheets_token_file,
@@ -305,6 +306,9 @@ def _assert_google_ready_if_configured() -> None:
     missing = missing_google_sheets_secret_keys()
     if missing:
         raise DataServiceError("Streamlit Secrets missing: " + ", ".join(missing))
+    invalid = invalid_google_oauth_secret_keys()
+    if invalid:
+        raise DataServiceError("Streamlit Secrets invalid: " + " ".join(invalid))
     if label == "Authorization Required":
         raise DataServiceError(
             "Google Sheets authorization required. Click Authorize Google Sheets in the sidebar."
@@ -385,6 +389,9 @@ def authorize_sheets() -> None:
 def _google_credentials():
     client_id, client_secret, refresh_token = google_oauth_secrets()
     if client_id and client_secret and refresh_token:
+        invalid = invalid_google_oauth_secret_keys()
+        if invalid:
+            raise DataServiceError("Streamlit Secrets invalid: " + " ".join(invalid))
         try:
             return credentials_from_refresh_token(
                 client_id=client_id,
@@ -399,7 +406,9 @@ def _google_credentials():
             if "invalid_client" in detail.lower():
                 raise DataServiceError(
                     "Google Sheets OAuth client_id was not recognized. "
-                    "Check [google] client_id, client_secret, and refresh_token in Streamlit Secrets."
+                    "Copy [google] client_id and client_secret from credentials.json "
+                    "installed.client_id and installed.client_secret, "
+                    "and copy refresh_token from sheets_token.json."
                 ) from exc
             raise DataServiceError(f"Google Sheets secret refresh failed: {exc}") from exc
 
