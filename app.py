@@ -233,6 +233,8 @@ def _render_draft(record: ReportData | None, report_date: dt.date, data_referenc
 
 
 def main() -> None:
+    st.session_state.pop("_sheets_status_result", None)
+    st.session_state.pop("_spreadsheet_title_live", None)
     st.title("Market Report")
     _sheets_ok, sheets_label = sheets_status()
     gmail_ok, gmail_label = gmail_status()

@@ -236,32 +236,60 @@ def _is_oauth_client(payload: dict[str, Any]) -> bool:
     return "installed" in payload or "web" in payload
 
 
+def _session_get(key: str, default: Any = None) -> Any:
+    try:
+        import streamlit as st
+
+        return st.session_state.get(key, default)
+    except Exception:
+        return default
+
+
+def _session_set(key: str, value: Any) -> None:
+    try:
+        import streamlit as st
+
+        st.session_state[key] = value
+    except Exception:
+        pass
+
+
 def sheets_status() -> tuple[bool, str]:
+    cached = _session_get("_sheets_status_result")
+    if isinstance(cached, tuple) and len(cached) == 2:
+        return cached[0], cached[1]
     if not google_sheet_id():
-        return False, "Not Connected"
-    if has_google_sheets_secrets():
-        return True, "Connected"
-    payload = _read_credentials_payload()
-    if _is_service_account(payload):
-        return True, "Connected"
-    if _is_oauth_client(payload):
-        if sheets_token_file().exists():
-            return True, "Connected"
-        if supports_browser_oauth():
-            return False, "Authorization Required"
-        return False, "Not Connected"
-    if payload:
-        return False, "Not Connected"
-    if google_credentials_file().exists() and supports_browser_oauth():
-        return False, "Authorization Required"
-    return False, "Not Connected"
+        result = (False, "Not Connected")
+        _session_set("_sheets_status_result", result)
+        return result
+    try:
+        spreadsheet = _google_client()
+        title = str(spreadsheet.title or "").strip()
+        _session_set("_spreadsheet_title_live", title)
+        result = (True, "Connected")
+    except DataServiceError as exc:
+        _session_set("_spreadsheet_title_live", "")
+        if supports_browser_oauth() and "authorization required" in str(exc).lower():
+            result = (False, "Authorization Required")
+        else:
+            result = (False, "Not Connected")
+    except Exception:
+        _session_set("_spreadsheet_title_live", "")
+        result = (False, "Not Connected")
+    _session_set("_sheets_status_result", result)
+    return result
 
 
 def spreadsheet_title() -> str:
+    cached = _session_get("_spreadsheet_title_live")
+    if cached:
+        return str(cached)
     if not sheets_status()[0]:
         return ""
     try:
-        return str(_google_client().title or "").strip()
+        title = str(_google_client().title or "").strip()
+        _session_set("_spreadsheet_title_live", title)
+        return title
     except Exception:
         return ""
 
