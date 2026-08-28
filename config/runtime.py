@@ -25,6 +25,9 @@ def is_streamlit_cloud() -> bool:
         return True
     if Path("/home/appuser").exists() and not is_windows():
         return True
+    cwd = str(Path.cwd()).replace("\\", "/")
+    if cwd.startswith("/mount/src"):
+        return True
     return False
 
 

@@ -58,7 +58,7 @@ def _as_plain_dict(block: Any) -> dict[str, Any]:
 def _scalar(value: Any) -> str:
     if value is None:
         return ""
-    if hasattr(value, "items"):
+    if isinstance(value, dict):
         return ""
     text = str(value).strip()
     if (len(text) >= 2) and text[0] == text[-1] and text[0] in {'"', "'"}:
@@ -99,23 +99,42 @@ def _section(name: str) -> dict[str, str]:
     return result
 
 
+def _google_section_value(key: str) -> str:
+    """Read st.secrets['google'][key] for Cloud OAuth. Does not use local files."""
+    secrets = _st_secrets()
+    if secrets is None:
+        return ""
+    try:
+        google = secrets["google"]
+        try:
+            text = _scalar(google[key])
+            if text:
+                return text
+        except Exception:
+            pass
+        try:
+            text = _scalar(getattr(google, key))
+            if text:
+                return text
+        except Exception:
+            pass
+    except Exception:
+        pass
+    try:
+        text = _scalar(secrets[f"google.{key}"])
+        if text:
+            return text
+    except Exception:
+        pass
+    return ""
+
+
 def google_sheet_id() -> str:
-    section = _section("google")
-    return (
-        section.get("sheet_id")
-        or section.get("spreadsheet_id")
-        or section.get("GOOGLE_SHEET_ID")
-        or _secret("GOOGLE_SHEET_ID")
-        or _secret("sheet_id")
-        or ""
-    )
+    return _google_section_value("sheet_id") or _secret("GOOGLE_SHEET_ID")
 
 
 def google_sheet_url() -> str:
-    section = _section("google")
-    if section.get("sheet_url"):
-        return section["sheet_url"]
-    explicit = _secret("GOOGLE_SHEET_URL")
+    explicit = _google_section_value("sheet_url") or _secret("GOOGLE_SHEET_URL")
     if explicit:
         return explicit
     sheet_id = google_sheet_id()
@@ -166,26 +185,11 @@ def _oauth_triplet(section_name: str) -> tuple[str, str, str]:
 
 
 def google_oauth_secrets() -> tuple[str, str, str]:
-    section = _section("google")
-    client_id = (
-        section.get("client_id")
-        or _secret("GOOGLE_CLIENT_ID")
-        or _secret("GOOGLE_SHEETS_CLIENT_ID")
-        or ""
+    return (
+        _google_section_value("client_id"),
+        _google_section_value("client_secret"),
+        _google_section_value("refresh_token"),
     )
-    client_secret = (
-        section.get("client_secret")
-        or _secret("GOOGLE_CLIENT_SECRET")
-        or _secret("GOOGLE_SHEETS_CLIENT_SECRET")
-        or ""
-    )
-    refresh_token = (
-        section.get("refresh_token")
-        or _secret("GOOGLE_REFRESH_TOKEN")
-        or _secret("GOOGLE_SHEETS_REFRESH_TOKEN")
-        or ""
-    )
-    return client_id, client_secret, refresh_token
 
 
 def gmail_oauth_secrets() -> tuple[str, str, str]:
@@ -241,8 +245,6 @@ def missing_google_sheets_secret_keys() -> list[str]:
     missing: list[str] = []
     if not google_sheet_id():
         missing.append("[google].sheet_id")
-    if has_google_service_account_secret():
-        return missing
     client_id, client_secret, refresh_token = google_oauth_secrets()
     if not client_id:
         missing.append("[google].client_id")

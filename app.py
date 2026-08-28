@@ -159,9 +159,12 @@ def _render_connection_status() -> None:
                 missing = missing_google_sheets_secret_keys()
                 if missing:
                     st.caption("Streamlit Secrets missing: " + ", ".join(missing))
-                elif is_streamlit_cloud():
+                err = st.session_state.get("_sheets_error")
+                if err:
+                    st.caption(str(err))
+                elif not missing and is_streamlit_cloud():
                     st.caption("Add [google] sheet_id, client_id, client_secret, and refresh_token in Streamlit Secrets.")
-                else:
+                elif not missing:
                     st.caption("Set GOOGLE_SHEET_ID in .env or Streamlit Secrets, then authorize Google Sheets.")
 
 
@@ -235,6 +238,7 @@ def _render_draft(record: ReportData | None, report_date: dt.date, data_referenc
 def main() -> None:
     st.session_state.pop("_sheets_status_result", None)
     st.session_state.pop("_spreadsheet_title_live", None)
+    st.session_state.pop("_sheets_error", None)
     st.title("Market Report")
     _sheets_ok, sheets_label = sheets_status()
     gmail_ok, gmail_label = gmail_status()

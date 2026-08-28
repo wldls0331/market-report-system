@@ -32,11 +32,12 @@ from config.google_config import (
     google_sheet_id,
     has_google_secret_oauth,
     has_google_sheets_secrets,
+    missing_google_sheets_secret_keys,
     persist_oauth_token,
     sheets_token_file,
 )
 from config.paths import DATA_DIR
-from config.runtime import supports_browser_oauth
+from config.runtime import is_streamlit_cloud, supports_browser_oauth
 from services.working_day_service import format_sheet_name, previous_week_last_working_day
 
 try:
@@ -266,15 +267,18 @@ def sheets_status() -> tuple[bool, str]:
         spreadsheet = _google_client()
         title = str(spreadsheet.title or "").strip()
         _session_set("_spreadsheet_title_live", title)
+        _session_set("_sheets_error", "")
         result = (True, "Connected")
     except DataServiceError as exc:
         _session_set("_spreadsheet_title_live", "")
+        _session_set("_sheets_error", str(exc))
         if supports_browser_oauth() and "authorization required" in str(exc).lower():
             result = (False, "Authorization Required")
         else:
             result = (False, "Not Connected")
-    except Exception:
+    except Exception as exc:
         _session_set("_spreadsheet_title_live", "")
+        _session_set("_sheets_error", str(exc))
         result = (False, "Not Connected")
     _session_set("_sheets_status_result", result)
     return result
@@ -295,19 +299,22 @@ def spreadsheet_title() -> str:
 
 
 def _assert_google_ready_if_configured() -> None:
-    if not google_sheet_id():
-        return
     connected, label = sheets_status()
     if connected:
         return
+    missing = missing_google_sheets_secret_keys()
+    if missing:
+        raise DataServiceError("Streamlit Secrets missing: " + ", ".join(missing))
     if label == "Authorization Required":
         raise DataServiceError(
             "Google Sheets authorization required. Click Authorize Google Sheets in the sidebar."
         )
-    raise DataServiceError(
-        "GOOGLE_SHEET_ID is set, but Google Sheets is not connected. "
-        "Add Streamlit Secrets or complete local Sheets authorization."
-    )
+    err = _session_get("_sheets_error")
+    if err:
+        raise DataServiceError(str(err))
+    if not google_sheet_id():
+        return
+    raise DataServiceError("Google Sheets is not connected.")
 
 
 def _token_can_read_sheets(credentials) -> bool:
@@ -376,8 +383,8 @@ def authorize_sheets() -> None:
 
 
 def _google_credentials():
-    if has_google_secret_oauth():
-        client_id, client_secret, refresh_token = google_oauth_secrets()
+    client_id, client_secret, refresh_token = google_oauth_secrets()
+    if client_id and client_secret and refresh_token:
         try:
             return credentials_from_refresh_token(
                 client_id=client_id,
@@ -385,15 +392,25 @@ def _google_credentials():
                 refresh_token=refresh_token,
                 scopes=list(SHEETS_SCOPES),
             )
+        except DataServiceError:
+            raise
         except Exception as exc:
             detail = str(exc)
             if "invalid_client" in detail.lower():
                 raise DataServiceError(
                     "Google Sheets OAuth client_id was not recognized. "
-                    "In Streamlit Secrets [google], copy client_id, client_secret, and refresh_token "
-                    "from the same local sheets_token.json (not Gmail token.json), and quote every value."
+                    "Check [google] client_id, client_secret, and refresh_token in Streamlit Secrets."
                 ) from exc
             raise DataServiceError(f"Google Sheets secret refresh failed: {exc}") from exc
+
+    if is_streamlit_cloud() or not google_credentials_file().exists():
+        missing = missing_google_sheets_secret_keys()
+        if missing:
+            raise DataServiceError("Streamlit Secrets missing: " + ", ".join(missing))
+        raise DataServiceError(
+            "Google Sheets could not authenticate. "
+            "Set [google] sheet_id, client_id, client_secret, and refresh_token in Streamlit Secrets."
+        )
 
     service_account = google_service_account_info()
     if service_account:
