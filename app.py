@@ -1,482 +1,372 @@
+"""Streamlit Community Cloud entry. Local HTML UI stays on Flask server.py:8502.
+
+Google Sheets is the source of truth. session_state only holds UI artifacts
+(email draft, last PDF path, last preview payload for widget reruns).
+"""
+
 from __future__ import annotations
 
-import base64
-import datetime as dt
 import html
-from collections import defaultdict
 from pathlib import Path
 
+import plotly.graph_objects as go
 import streamlit as st
 
-from config.cell_mapping import NUMBER_FIELDS, SHEET_NAME_SUFFIX, STRATEGY_FIELDS
-from config.email_config import default_body, default_subject
 from config.google_config import (
     google_sheet_url,
     invalid_google_oauth_secret_keys,
     missing_google_sheets_secret_keys,
 )
-from config.paths import find_template
 from config.runtime import is_streamlit_cloud, supports_browser_oauth
-from services.data_service import DataServiceError
-from services.excel_service import GenerateError, generate_market_report
-from services.gmail_service import GmailServiceError, authorize_gmail, gmail_status, send_email
-from services.google_sheets_service import (
-    ReportData,
-    active_recipient_emails,
-    authorize_sheets,
-    load_email_recipients_result,
-    sheets_status,
-    spreadsheet_title,
-)
-from services.input_sheet_service import (
-    create_or_update_report_from_input,
-    dated_report_exists,
-    ensure_input_sheet,
-    load_input_data,
-)
-from services.pricing_month_service import YearMonth, default_pricing_month
-from services.working_day_service import (
-    format_data_reference_display,
-    format_pdf_filename,
-    format_sheet_name,
-    singapore_holiday_name,
-    validate_report_date,
+from services.gmail_service import GmailServiceError, authorize_gmail, send_email
+from services.google_sheets_service import DataServiceError, authorize_sheets
+from services.preview_service import (
+    build_preview,
+    connection_status,
+    create_report_files,
+    public_preview,
 )
 
-st.set_page_config(page_title="Market Report", layout="wide", initial_sidebar_state="expanded")
+PALETTE = ["#1b365d", "#6b7280", "#c4a35a", "#334155", "#94a3b8"]
+
+st.set_page_config(page_title="Market Report", layout="wide", initial_sidebar_state="collapsed")
 
 st.markdown(
     """
     <style>
-    .block-container { padding-top: 1.4rem; max-width: 1180px; }
-    h1 { font-weight: 650; letter-spacing: -0.02em; }
-    .hint { color: #6b7280; font-size: 0.86rem; margin-bottom: 0.55rem; }
-    .draft-value { white-space: pre-wrap; margin: 0 0 0.7rem 0; }
-    .stButton>button {
-        width: 100%;
-        height: 3rem;
-        font-size: 1.05rem;
-        font-weight: 600;
+    [data-testid="stToolbar"], [data-testid="stDecoration"],
+    [data-testid="stStatusWidget"], .stDeployButton,
+    footer { display: none !important; }
+    .block-container { padding-top: 1.2rem; max-width: 1280px; }
+    h1 { font-weight: 650; letter-spacing: -0.02em; color: #1b365d; }
+    .status-ok { color: #166534; font-weight: 600; }
+    .status-bad { color: #9f1239; font-weight: 600; }
+    .report-banner {
+        background: #1b365d; color: #fff; padding: 0.85rem 1rem;
+        border-bottom: 3px solid #c4a35a; border-radius: 8px 8px 0 0;
+        font-weight: 650; letter-spacing: 0.04em;
+    }
+    .comment-box {
+        white-space: pre-wrap; line-height: 1.55; font-size: 0.95rem;
+        margin: 0 0 0.8rem 0;
     }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-PAPER_DRAFT_LABELS = {
-    "paper_fo": "SING 0.5",
-    "paper_hsfo": "SING 380",
-    "paper_go": "GASOIL 10PPM",
-}
-PREMIUM_DRAFT_LABELS = {
-    "hdo_premium": "HDO",
-    "sk_premium": "SK",
-    "soil_premium": "S-OIL",
-    "gs_premium": "GS",
-}
+
+def _comment_html(text: str) -> str:
+    return f'<p class="comment-box">{html.escape(text or "TBN").replace(chr(10), "<br>")}</p>'
 
 
-def _ui_sheet(name: str | None) -> str:
-    if not name:
-        return ""
-    text = str(name)
-    suffix = f" {SHEET_NAME_SUFFIX}"
-    return text[: -len(suffix)] if text.endswith(suffix) else text
+def _status_html(label: str, value: str, ok: bool) -> str:
+    klass = "status-ok" if ok else "status-bad"
+    return f'{label}: <span class="{klass}">{value}</span>'
 
 
-def _tbn(value) -> str:
-    text = "" if value is None else str(value).strip()
-    return text if text else "TBN"
-
-
-def _show_field(label: str, value) -> None:
-    st.markdown(f"**{label}**")
-    rendered = html.escape(_tbn(value)).replace("\n", "<br>")
-    st.markdown(f'<div class="draft-value">{rendered}</div>', unsafe_allow_html=True)
-
-
-def _pricing_month_for(record: ReportData | None, data_reference_date: dt.date) -> YearMonth:
-    if record and record.pricing_month:
-        try:
-            return YearMonth.parse(record.pricing_month)
-        except ValueError:
-            pass
-    return default_pricing_month(data_reference_date)
-
-
-def _show_pdf(path: Path) -> None:
-    data = path.read_bytes()
-    pdf_widget = getattr(st, "pdf", None)
-    if callable(pdf_widget):
-        pdf_widget(data, height=720)
-        return
-    encoded = base64.b64encode(data).decode("ascii")
-    st.components.v1.html(
-        f'<iframe src="data:application/pdf;base64,{encoded}" width="100%" height="720"></iframe>',
-        height=740,
+def _line_fig(payload: dict) -> go.Figure:
+    fig = go.Figure()
+    labels = payload.get("labels") or []
+    for index, series in enumerate(payload.get("series") or []):
+        fig.add_trace(
+            go.Scatter(
+                x=labels,
+                y=series.get("data") or [],
+                name=series.get("name") or f"Series {index + 1}",
+                mode="lines+markers",
+                line={"color": PALETTE[index % len(PALETTE)], "width": 2},
+                connectgaps=True,
+            )
+        )
+    fig.update_layout(
+        height=340,
+        margin={"l": 40, "r": 16, "t": 8, "b": 40},
+        paper_bgcolor="white",
+        plot_bgcolor="white",
+        legend={"orientation": "h", "y": -0.2},
+        xaxis={"showgrid": False},
+        yaxis={"gridcolor": "#eef2f7"},
     )
+    return fig
 
 
-def _render_connection_status() -> None:
-    sheets_ok, sheets_label = sheets_status()
-    gmail_ok, gmail_label = gmail_status()
-    sheet_url = google_sheet_url()
-    book_title = ""
-    if sheets_ok:
-        try:
-            book_title = spreadsheet_title()
-        except Exception:
-            book_title = ""
-    with st.sidebar:
-        st.subheader("Connection Status")
-        st.write(f"Google Sheets: **{sheets_label}**")
-        if sheets_ok:
-            st.write(f"Spreadsheet: **{book_title or '—'}**")
-        st.write(f"Gmail: **{gmail_label}**")
-        if sheet_url:
-            st.link_button("Open Google Sheet", sheet_url)
-        if not gmail_ok and supports_browser_oauth():
-            if st.button("Authorize Gmail", key="auth_gmail"):
-                try:
-                    authorize_gmail()
-                    st.success("Gmail authorized.")
-                    st.rerun()
-                except GmailServiceError as exc:
-                    st.error(str(exc))
-                except Exception as exc:
-                    st.error(f"Gmail authorization failed: {exc}")
-        elif not gmail_ok and is_streamlit_cloud():
-            st.caption("Add [gmail] client_id, client_secret, and refresh_token in Streamlit Secrets.")
-        if not sheets_ok:
-            if sheets_label == "Authorization Required" and supports_browser_oauth():
-                if st.button("Authorize Google Sheets", key="auth_sheets"):
-                    try:
-                        authorize_sheets()
-                        st.success("Google Sheets authorized.")
-                        st.rerun()
-                    except DataServiceError as exc:
-                        st.error(str(exc))
-                    except Exception as exc:
-                        st.error(f"Google Sheets authorization failed: {exc}")
-            else:
-                missing = missing_google_sheets_secret_keys()
-                if missing:
-                    st.caption("Streamlit Secrets missing: " + ", ".join(missing))
-                invalid = invalid_google_oauth_secret_keys()
-                if invalid:
-                    st.caption("Streamlit Secrets invalid: " + " ".join(invalid))
-                err = st.session_state.get("_sheets_error")
-                if err:
-                    st.caption(str(err))
-                elif not missing and not invalid and is_streamlit_cloud():
-                    st.caption("Add [google] sheet_id, client_id, client_secret, and refresh_token in Streamlit Secrets.")
-                elif not missing and not invalid:
-                    st.caption("Set GOOGLE_SHEET_ID in .env or Streamlit Secrets, then authorize Google Sheets.")
+def _bar_fig(payload: dict) -> go.Figure:
+    fig = go.Figure()
+    labels = payload.get("labels") or []
+    for index, series in enumerate(payload.get("series") or []):
+        fig.add_trace(
+            go.Bar(
+                x=labels,
+                y=series.get("data") or [],
+                name=series.get("name") or f"Series {index + 1}",
+                marker_color=PALETTE[index % len(PALETTE)],
+            )
+        )
+    fig.update_layout(
+        barmode="group",
+        height=380,
+        margin={"l": 40, "r": 16, "t": 8, "b": 40},
+        paper_bgcolor="white",
+        plot_bgcolor="white",
+        legend={"orientation": "h", "y": -0.2},
+        xaxis={"showgrid": False},
+        yaxis={"gridcolor": "#eef2f7"},
+    )
+    return fig
 
 
-def _render_draft(record: ReportData | None, report_date: dt.date, data_reference_date: dt.date) -> None:
-    st.markdown("### Draft Preview")
-    st.caption("Values are read from the Google Sheets INPUT tab. Blank cells display as TBN.")
-    sheet_url = google_sheet_url()
-    if sheet_url:
-        st.link_button("Open Google Sheet", sheet_url)
-    inputs = record.inputs if record else {}
-    month = _pricing_month_for(record, data_reference_date)
-
-    st.markdown("#### Report Information")
-    info_cols = st.columns(3)
-    with info_cols[0]:
-        _show_field("Report Date", report_date.isoformat())
-        _show_field("Data Reference Date", format_data_reference_display(data_reference_date))
-    with info_cols[1]:
-        _show_field("Pricing Month", month.label())
-        if record and record.sheet_name:
-            _show_field("Target Sheet", record.sheet_name)
-    with info_cols[2]:
-        extras = record.extra_cells if record else {}
-        _show_field("This Week Friday", extras.get("this_week_friday", ""))
-        _show_field("Previous Week Friday", extras.get("previous_week_friday", data_reference_date.isoformat()))
-        _show_field("Two Weeks Ago Friday", extras.get("two_weeks_ago_friday", ""))
-
-    st.markdown("#### Paper / MOPS")
-    paper_fields = [item for item in NUMBER_FIELDS if item.section == "paper"]
-    paper_cols = st.columns(len(paper_fields))
-    for col, item in zip(paper_cols, paper_fields):
-        with col:
-            _show_field(PAPER_DRAFT_LABELS.get(item.key, item.label), inputs.get(item.key))
-
-    st.markdown("#### Bunker Market Price")
-    bunker_fields = [item for item in NUMBER_FIELDS if item.section == "bunker"]
-    bunker_groups: dict[str, list] = defaultdict(list)
-    for item in bunker_fields:
-        bunker_groups[item.group].append(item)
-    group_cols = st.columns(len(bunker_groups))
-    for col, (group, fields) in zip(group_cols, bunker_groups.items()):
-        with col:
-            st.markdown(f"**{group}**")
-            for item in fields:
-                _show_field(item.label, inputs.get(item.key))
-
-    st.markdown("#### Korea Refinery Premium")
-    premium_fields = [item for item in NUMBER_FIELDS if item.section == "premium"]
-    premium_cols = st.columns(len(premium_fields))
-    for col, item in zip(premium_cols, premium_fields):
-        with col:
-            _show_field(PREMIUM_DRAFT_LABELS.get(item.key, item.label), inputs.get(item.key))
-
-    st.markdown("#### Korea Market")
-    _show_field("Commentary", inputs.get("comment_korea"))
-
-    st.markdown("#### Worldwide Market")
-    world_cols = st.columns(2)
-    with world_cols[0]:
-        _show_field("South Korea", inputs.get("comment_korea_worldwide") or inputs.get("comment_korea"))
-        _show_field("Singapore", inputs.get("comment_singapore"))
-    with world_cols[1]:
-        _show_field("China", inputs.get("comment_china"))
-        _show_field("Japan", inputs.get("comment_japan"))
-
-    st.markdown("#### Strategy")
-    strategy_cols = st.columns(3)
-    for col, item in zip(strategy_cols, STRATEGY_FIELDS):
-        with col:
-            _show_field(item.label, inputs.get(item.key))
+def _hydrate_email(preview: dict) -> None:
+    email = preview.get("email") or {}
+    st.session_state["email_to"] = email.get("to") or ""
+    st.session_state["email_cc"] = email.get("cc") or ""
+    st.session_state["email_subject"] = email.get("subject") or ""
+    st.session_state["email_body"] = email.get("body") or ""
 
 
-def main() -> None:
+def _store_preview(payload: dict, *, hydrate_email: bool) -> dict:
+    preview = public_preview(payload)
+    files = preview.get("files") or {}
+    if files.get("pdf_path"):
+        st.session_state["pdf_path"] = files["pdf_path"]
+    if files.get("excel_path"):
+        st.session_state["excel_path"] = files["excel_path"]
+    st.session_state["preview"] = preview
+    if hydrate_email:
+        _hydrate_email(preview)
+    return preview
+
+
+def _load_from_sheets(*, sync_sheet: bool) -> dict:
     st.session_state.pop("_sheets_status_result", None)
     st.session_state.pop("_spreadsheet_title_live", None)
     st.session_state.pop("_sheets_error", None)
+    return _store_preview(build_preview(sync_sheet=sync_sheet), hydrate_email=True)
+
+
+def _create_from_sheets() -> dict:
+    st.session_state.pop("_sheets_status_result", None)
+    st.session_state.pop("_spreadsheet_title_live", None)
+    st.session_state.pop("_sheets_error", None)
+    return _store_preview(create_report_files(), hydrate_email=True)
+
+
+def _file_bytes(path_text: str | None) -> bytes | None:
+    if not path_text:
+        return None
+    path = Path(path_text)
+    if not path.exists():
+        return None
+    return path.read_bytes()
+
+
+def main() -> None:
     st.title("Market Report")
-    _sheets_ok, sheets_label = sheets_status()
-    gmail_ok, gmail_label = gmail_status()
-    st.caption("Enter market data in the Google Sheets INPUT tab, then create the dated report here.")
-    st.caption(f"Google Sheets: {sheets_label} · Gmail: {gmail_label}")
+    st.caption("Google Sheets INPUT is the source. This page shows the finished weekly report.")
 
-    _render_connection_status()
+    if "preview" not in st.session_state:
+        try:
+            _load_from_sheets(sync_sheet=False)
+        except DataServiceError as exc:
+            st.session_state["preview"] = {
+                "error": str(exc),
+                "status": connection_status(),
+                "meta": None,
+                "comments": {},
+                "charts": {},
+                "email": {},
+                "files": {},
+            }
 
-    try:
-        template = find_template()
-        st.caption(f"Template: `{template.name}`")
-    except FileNotFoundError as exc:
-        st.error(str(exc))
-        st.stop()
+    preview = st.session_state.get("preview") or {}
+    status = preview.get("status") or connection_status()
+    sheets_ok = bool(status.get("sheets_ok"))
+    gmail_ok = bool(status.get("gmail_ok"))
 
-    refresh_col, sheet_col = st.columns([1, 1])
-    with refresh_col:
-        if st.button("Refresh Data"):
-            if _sheets_ok:
-                try:
-                    ensure_input_sheet(refresh_auto=True)
-                except Exception:
-                    pass
-            st.rerun()
-    sheet_url = google_sheet_url()
-    with sheet_col:
+    top = st.columns([2.2, 2.2, 1.4, 1.4, 1.6])
+    with top[0]:
+        st.markdown(
+            _status_html("Google Sheets", status.get("sheets") or "Not Connected", sheets_ok),
+            unsafe_allow_html=True,
+        )
+        if status.get("spreadsheet"):
+            st.caption(status["spreadsheet"])
+    with top[1]:
+        st.markdown(
+            _status_html("Gmail", status.get("gmail") or "Not Connected", gmail_ok),
+            unsafe_allow_html=True,
+        )
+    with top[2]:
+        refresh = st.button("Refresh Data", width="stretch")
+    with top[3]:
+        sheet_url = status.get("sheet_url") or google_sheet_url()
         if sheet_url:
-            st.link_button("Open Google Sheet", sheet_url)
+            st.link_button("Open Google Sheet", sheet_url, width="stretch")
+    with top[4]:
+        create = st.button("Create / Update Report", type="primary", width="stretch")
 
-    record = None
-    load_error = None
-    if _sheets_ok:
-        try:
-            record = load_input_data()
-        except DataServiceError as exc:
-            load_error = str(exc)
-            st.error(load_error)
-    else:
-        st.info("Connect Google Sheets to read the INPUT tab.")
-
-    if record is None:
-        st.stop()
-
-    report_date = record.report_date
-    data_reference_date = record.data_reference_date
-    date_ok = True
-    try:
-        validate_report_date(report_date)
-    except Exception as exc:
-        date_ok = False
-        st.warning(str(exc))
-        if report_date.weekday() >= 5:
-            st.info("Weekends are not Singapore working days. A report cannot be generated.")
-        elif singapore_holiday_name(report_date):
-            st.info("Singapore public holidays cannot be used as Report Date.")
-
-    st.markdown("**Report Date**")
-    st.write(report_date.isoformat())
-    st.caption(f"Target sheet: `{format_sheet_name(report_date)}`")
-
-    report_exists = False
-    try:
-        report_exists = dated_report_exists(report_date)
-    except Exception:
-        report_exists = False
-    if report_exists:
-        st.caption(f"Existing Google sheet `{_ui_sheet(format_sheet_name(report_date))}` will be updated.")
-    else:
-        st.caption("No sheet for this date yet. Create Report will copy the latest dated report sheet.")
-
-    recipients_warning = None
-    if _sheets_ok:
-        try:
-            _recipients, recipients_warning = load_email_recipients_result()
-        except DataServiceError as exc:
-            recipients_warning = str(exc)
-    if recipients_warning:
-        st.warning(recipients_warning)
-
-    _render_draft(record, report_date, data_reference_date)
-
-    st.markdown("---")
-    st.markdown("### Report")
-    create_clicked = st.button("Create / Update Report", type="primary", disabled=not date_ok)
-    if create_clicked:
-        if not date_ok:
-            st.error("Report Date must be a Singapore working day.")
-        else:
-            spinner_msg = (
-                "Updating the dated Google sheet and generating the PDF..."
-                if report_exists
-                else "Copying the latest dated sheet, applying INPUT, and generating the PDF..."
-            )
-            with st.spinner(spinner_msg):
+    if not sheets_ok:
+        missing = missing_google_sheets_secret_keys()
+        invalid = invalid_google_oauth_secret_keys()
+        if is_streamlit_cloud():
+            if missing:
+                st.error("Streamlit Secrets missing: " + ", ".join(missing))
+            if invalid:
+                st.error("Streamlit Secrets invalid: " + " ".join(invalid))
+            if not missing and not invalid:
+                st.error(preview.get("error") or "Google Sheets is not connected.")
+        elif status.get("sheets") == "Authorization Required" and supports_browser_oauth():
+            if st.button("Authorize Google Sheets"):
                 try:
-                    sheet_name, google_updated = create_or_update_report_from_input(record)
-                    generate_month = _pricing_month_for(record, report_date)
-                    result = generate_market_report(
-                        report_date,
-                        record.inputs,
-                        export_pdf=True,
-                        pricing_month=generate_month,
-                        extra_cells=None,
-                        data_reference_date=data_reference_date,
-                    )
-                    expected_pdf = format_pdf_filename(report_date)
-                    pdf_path = str(result.pdf_path) if result.pdf_path else None
-                    if pdf_path and Path(pdf_path).name != expected_pdf:
-                        pdf_path = None
-                    to_list, cc_list = [], []
-                    try:
-                        to_list, cc_list = active_recipient_emails()
-                    except DataServiceError as exc:
-                        st.warning(str(exc))
-                    st.session_state["result"] = {
-                        "excel_path": str(result.excel_path),
-                        "pdf_path": pdf_path,
-                        "sheet_name": sheet_name,
-                        "previous_sheet": result.previous_sheet,
-                        "warnings": result.warnings,
-                        "pdf_page_count": result.pdf_page_count,
-                        "pricing_month": result.pricing_month,
-                        "is_update": google_updated,
-                        "data_reference_date": data_reference_date.isoformat(),
-                        "report_date": report_date.isoformat(),
-                    }
-                    st.session_state["email_to"] = "\n".join(to_list)
-                    st.session_state["email_cc"] = "\n".join(cc_list)
-                    st.session_state["email_subject"] = default_subject(report_date)
-                    st.session_state["email_body"] = default_body(report_date)
+                    authorize_sheets()
                     st.rerun()
-                except DataServiceError as exc:
-                    st.session_state.pop("result", None)
-                    st.error(str(exc))
-                except GenerateError as exc:
-                    st.session_state.pop("result", None)
-                    st.error(str(exc))
                 except Exception as exc:
-                    st.session_state.pop("result", None)
-                    st.error(f"Report generation failed: {exc}")
+                    st.error(str(exc))
+        elif preview.get("error"):
+            st.error(preview["error"])
 
-    result = st.session_state.get("result")
-    matching_result = bool(result) and result.get("report_date") == report_date.isoformat()
-    if matching_result:
-        st.success("Market Report generated successfully.")
-        extras = []
-        if result.get("data_reference_date"):
-            extras.append(
-                "Data Reference Date "
-                + format_data_reference_display(dt.date.fromisoformat(result["data_reference_date"]))
-            )
-        if result.get("pdf_page_count"):
-            extras.append(f"PDF {result['pdf_page_count']} page(s)")
-        extra_note = (" · " + " · ".join(extras)) if extras else ""
-        if result.get("is_update"):
-            st.caption(f"Updated Google sheet `{_ui_sheet(result['sheet_name'])}`{extra_note}")
+    if not gmail_ok and supports_browser_oauth() and not is_streamlit_cloud():
+        if st.button("Authorize Gmail"):
+            try:
+                authorize_gmail()
+                st.rerun()
+            except Exception as exc:
+                st.error(str(exc))
+    elif not gmail_ok and is_streamlit_cloud():
+        st.caption("Add [gmail] client_id, client_secret, and refresh_token in Streamlit Secrets.")
+
+    if refresh:
+        with st.spinner("Reading the latest Google Sheets INPUT and report tabs…"):
+            try:
+                preview = _load_from_sheets(sync_sheet=False)
+            except DataServiceError as exc:
+                st.error(str(exc))
+                st.stop()
+        st.rerun()
+
+    if create:
+        with st.spinner("Re-reading Google Sheets, updating the dated tab, and generating PDF…"):
+            try:
+                preview = _create_from_sheets()
+            except DataServiceError as exc:
+                st.error(str(exc))
+                st.stop()
+        st.rerun()
+
+    preview = st.session_state.get("preview") or {}
+    if preview.get("error"):
+        st.error(preview["error"])
+        st.stop()
+    if preview.get("warning"):
+        st.warning(preview["warning"])
+
+    meta = preview.get("meta") or {}
+    if meta.get("date_warning"):
+        st.warning(meta["date_warning"])
+
+    info = st.columns(5)
+    info[0].metric("Report Date", meta.get("report_date") or "—")
+    info[1].metric("Pricing Month", meta.get("pricing_month") or "—")
+    info[2].metric("This Week Friday", meta.get("this_week_friday") or "—")
+    info[3].metric("Previous Week Friday", meta.get("previous_week_friday") or "—")
+    info[4].metric("Two Weeks Ago Friday", meta.get("two_weeks_ago_friday") or "—")
+
+    comments = preview.get("comments") or {}
+    charts = preview.get("charts") or {}
+
+    st.markdown(
+        f'<div class="report-banner">{meta.get("report_title") or "WEEKLY BUNKERING REPORT"}</div>',
+        unsafe_allow_html=True,
+    )
+    page1 = st.columns([1.15, 0.85])
+    with page1[0]:
+        st.subheader("Korea Major 4 Refiners - VLSFO Premium Trends")
+        st.plotly_chart(_line_fig(charts.get("korea_premium") or {}), width="stretch")
+    with page1[1]:
+        st.subheader("Korea Bunker Market")
+        st.markdown(_comment_html(comments.get("korea") or "TBN"), unsafe_allow_html=True)
+        strategy = comments.get("strategy") or []
+        if strategy:
+            st.caption("\n".join(strategy))
+
+    st.markdown('<div class="report-banner">Worldwide Market</div>', unsafe_allow_html=True)
+    page2 = st.columns([1.15, 0.85])
+    with page2[0]:
+        st.subheader("Worldwide Ports - VLSFO Bunker Price Trend")
+        st.plotly_chart(_line_fig(charts.get("worldwide_vlsfo") or {}), width="stretch")
+    with page2[1]:
+        st.subheader("Worldwide Market for this week")
+        st.markdown("**South Korea**")
+        st.markdown(_comment_html(comments.get("korea_worldwide") or comments.get("korea") or "TBN"), unsafe_allow_html=True)
+        st.markdown("**Singapore**")
+        st.markdown(_comment_html(comments.get("singapore") or "TBN"), unsafe_allow_html=True)
+        st.markdown("**China / Zhoushan**")
+        st.markdown(_comment_html(comments.get("china") or "TBN"), unsafe_allow_html=True)
+        st.markdown("**Japan**")
+        st.markdown(_comment_html(comments.get("japan") or "TBN"), unsafe_allow_html=True)
+
+    st.markdown('<div class="report-banner">SPREAD TREND · BUNKER WIRE - MOPS SINGAPORE 0.5%</div>', unsafe_allow_html=True)
+    st.plotly_chart(_bar_fig(charts.get("spread") or {}), width="stretch")
+
+    files = preview.get("files") or {}
+    pdf_path = st.session_state.get("pdf_path") or files.get("pdf_path")
+    excel_path = st.session_state.get("excel_path") or files.get("excel_path")
+    pdf_bytes = _file_bytes(pdf_path)
+    excel_bytes = _file_bytes(excel_path)
+
+    st.markdown("### Report files")
+    st.caption("Create / Update Report writes the dated Google sheet and generates the PDF. It does not send email.")
+    downs = st.columns(2)
+    with downs[0]:
+        st.download_button(
+            "Download PDF",
+            data=pdf_bytes or b"",
+            file_name=files.get("pdf") or "report.pdf",
+            mime="application/pdf",
+            disabled=pdf_bytes is None,
+            width="stretch",
+        )
+    with downs[1]:
+        st.download_button(
+            "Download Excel",
+            data=excel_bytes or b"",
+            file_name=files.get("excel") or "report.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            disabled=excel_bytes is None,
+            width="stretch",
+        )
+
+    st.markdown("### Email Preview")
+    st.caption("Review recipients, then send. Create Report never sends mail.")
+    if "email_to" not in st.session_state:
+        _hydrate_email(preview)
+    st.text_area("To", key="email_to", height=80)
+    st.text_area("CC", key="email_cc", height=70)
+    st.text_input("Subject", key="email_subject")
+    st.text_area("Body", key="email_body", height=160)
+    st.caption(f"Attachment: {Path(pdf_path).name if pdf_bytes and pdf_path else 'none'}")
+
+    if st.button("Send Email", type="primary"):
+        if not gmail_ok:
+            st.error("Gmail is not connected.")
+        elif not (st.session_state.get("email_to") or "").strip():
+            st.error("At least one TO recipient is required.")
+        elif not pdf_bytes or not pdf_path:
+            st.error("Create / Update Report first so a PDF attachment exists.")
         else:
-            st.caption(f"Created Google sheet `{_ui_sheet(result['sheet_name'])}`{extra_note}")
-        st.caption("PDF is generated from the dated report sheet, not from INPUT.")
-        for warning in result.get("warnings") or []:
-            st.warning(warning)
-
-        excel_path = result["excel_path"]
-        pdf_path = result.get("pdf_path")
-        expected_name = format_pdf_filename(report_date)
-        pdf_ok = bool(pdf_path) and Path(str(pdf_path)).exists() and Path(str(pdf_path)).name == expected_name
-
-        st.markdown("#### PDF Preview")
-        if pdf_ok:
-            st.caption(f"Generated PDF: `{expected_name}`")
-            _show_pdf(Path(str(pdf_path)))
-        else:
-            st.warning("PDF was not generated for this Report Date.")
-
-        down_left, down_right = st.columns(2)
-        with down_left:
-            if pdf_ok:
-                with open(str(pdf_path), "rb") as handle:
-                    st.download_button(
-                        "Download PDF",
-                        data=handle.read(),
-                        file_name=expected_name,
-                        mime="application/pdf",
-                    )
-        with down_right:
-            with open(excel_path, "rb") as handle:
-                st.download_button(
-                    "Download Excel",
-                    data=handle.read(),
-                    file_name=Path(excel_path).name,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            try:
+                send_email(
+                    to_text=st.session_state.get("email_to", ""),
+                    cc_text=st.session_state.get("email_cc", ""),
+                    subject=st.session_state.get("email_subject", ""),
+                    body=st.session_state.get("email_body", ""),
+                    attachment_path=Path(pdf_path),
                 )
-
-        st.markdown("---")
-        st.markdown("### Email Preview")
-        st.caption("Create / Update Report never sends mail. Review, then click Send Email.")
-        st.text_area("To", key="email_to", height=80)
-        st.text_area("CC", key="email_cc", height=70)
-        st.text_input("Subject", key="email_subject")
-        st.text_area("Body", key="email_body", height=160)
-        if pdf_ok:
-            st.caption(f"Attachment: `{expected_name}`")
-        else:
-            st.warning("No matching PDF attachment for this Report Date.")
-
-        if st.button("Send Email", type="primary"):
-            if not gmail_ok:
-                st.error("Gmail is not connected. Authorize Gmail first.")
-            elif not (st.session_state.get("email_to") or "").strip():
-                st.error("At least one TO recipient is required.")
-            elif not pdf_ok:
-                st.error("PDF attachment for this Report Date was not found.")
-            elif not (st.session_state.get("email_subject") or "").strip():
-                st.error("Subject is required.")
-            elif not (st.session_state.get("email_body") or "").strip():
-                st.error("Body is required.")
-            else:
-                try:
-                    send_email(
-                        to_text=st.session_state.get("email_to", ""),
-                        cc_text=st.session_state.get("email_cc", ""),
-                        subject=st.session_state.get("email_subject", ""),
-                        body=st.session_state.get("email_body", ""),
-                        attachment_path=Path(str(pdf_path)),
-                    )
-                    st.success("Email sent successfully.")
-                except GmailServiceError as exc:
-                    st.error(str(exc))
-                except Exception as exc:
-                    st.error(f"Email send failed: {exc}")
+                st.success("Email sent successfully.")
+            except GmailServiceError as exc:
+                st.error(str(exc))
+            except Exception as exc:
+                st.error(f"Email send failed: {exc}")
 
 
 if __name__ == "__main__":

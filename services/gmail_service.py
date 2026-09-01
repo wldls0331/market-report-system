@@ -85,7 +85,7 @@ def _load_credentials():
 
     if not supports_browser_oauth():
         raise GmailServiceError(
-            "Gmail is not connected. Set [gmail] client_id, client_secret, and refresh_token in Streamlit Secrets."
+            "Gmail is not connected. Set GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, and GMAIL_REFRESH_TOKEN."
         )
     if not creds_path.exists():
         raise GmailServiceError(

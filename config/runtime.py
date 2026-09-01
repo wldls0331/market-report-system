@@ -1,4 +1,4 @@
-"""Runtime helpers for local Windows vs Streamlit Cloud."""
+"""Runtime helpers for local Windows vs hosted Linux (Render / Streamlit Cloud)."""
 
 from __future__ import annotations
 
@@ -31,6 +31,18 @@ def is_streamlit_cloud() -> bool:
     return False
 
 
+def is_render() -> bool:
+    return bool(
+        str(os.environ.get("RENDER") or "").strip()
+        or str(os.environ.get("RENDER_SERVICE_ID") or "").strip()
+    )
+
+
+def is_hosted() -> bool:
+    """True on Render, Streamlit Cloud, and other public web hosts."""
+    return is_render() or is_streamlit_cloud()
+
+
 def supports_browser_oauth() -> bool:
-    """Desktop OAuth localhost callback is not available on Streamlit Cloud."""
-    return not is_streamlit_cloud()
+    """Desktop OAuth localhost callback is not available on hosted platforms."""
+    return not is_hosted()

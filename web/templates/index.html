@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Market Report</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.8/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <h1>Market Report</h1>
+      <div class="status-group">
+        <span class="status-pill" id="sheets-status">Google Sheets: —</span>
+        <span class="status-pill" id="gmail-status">Gmail: —</span>
+      </div>
+      <div class="top-actions">
+        <button type="button" class="btn" id="btn-refresh">Refresh Data</button>
+        <a class="btn" id="btn-sheet" href="#" target="_blank" rel="noopener">Open Google Sheet</a>
+        <button type="button" class="btn ghost" id="btn-auth-sheets" hidden>Authorize Sheets</button>
+        <button type="button" class="btn ghost" id="btn-auth-gmail" hidden>Authorize Gmail</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="page">
+    <p class="banner" id="message" hidden></p>
+
+    <section class="meta-strip" id="meta-strip">
+      <div><span>Report Date</span><strong id="meta-date">—</strong></div>
+      <div><span>Pricing Month</span><strong id="meta-month">—</strong></div>
+      <div><span>This Week Friday</span><strong id="meta-this">—</strong></div>
+      <div><span>Previous Week Friday</span><strong id="meta-prev">—</strong></div>
+      <div><span>Two Weeks Ago Friday</span><strong id="meta-two">—</strong></div>
+    </section>
+
+    <article class="report-page" id="page-1">
+      <header class="report-banner">
+        <h2 id="report-title">WEEKLY BUNKERING REPORT</h2>
+      </header>
+      <div class="split">
+        <section class="panel">
+          <h3>Korea Major 4 Refiners - VLSFO Premium Trends</h3>
+          <div class="chart-wrap">
+            <canvas id="chart-korea"></canvas>
+          </div>
+        </section>
+        <section class="panel">
+          <h3>Korea Bunker Market</h3>
+          <p class="commentary" id="comment-korea">TBN</p>
+          <div class="strategy" id="strategy-block"></div>
+        </section>
+      </div>
+    </article>
+
+    <article class="report-page" id="page-2">
+      <header class="report-banner">
+        <h2>Worldwide Market</h2>
+      </header>
+      <div class="split">
+        <section class="panel">
+          <h3>Worldwide Ports - VLSFO Bunker Price Trend</h3>
+          <div class="chart-wrap">
+            <canvas id="chart-world"></canvas>
+          </div>
+        </section>
+        <section class="panel">
+          <h3>Worldwide Market for this week</h3>
+          <div class="comment-block">
+            <h4>South Korea</h4>
+            <p class="commentary" id="comment-korea-world">TBN</p>
+          </div>
+          <div class="comment-block">
+            <h4>Singapore</h4>
+            <p class="commentary" id="comment-singapore">TBN</p>
+          </div>
+          <div class="comment-block">
+            <h4>China / Zhoushan</h4>
+            <p class="commentary" id="comment-china">TBN</p>
+          </div>
+          <div class="comment-block">
+            <h4>Japan</h4>
+            <p class="commentary" id="comment-japan">TBN</p>
+          </div>
+        </section>
+      </div>
+    </article>
+
+    <article class="report-page" id="page-3">
+      <header class="report-banner">
+        <h2>SPREAD TREND</h2>
+        <p class="subtitle">BUNKER WIRE - MOPS SINGAPORE 0.5%</p>
+      </header>
+      <section class="panel">
+        <div class="chart-wrap tall">
+          <canvas id="chart-spread"></canvas>
+        </div>
+      </section>
+    </article>
+
+    <section class="card actions-card">
+      <h3>Report</h3>
+      <p class="hint" id="report-hint">Create / Update Report writes INPUT into the dated Google sheet and generates the PDF. It does not send email.</p>
+      <div class="action-row">
+        <button type="button" class="btn primary" id="btn-create">Create / Update Report</button>
+        <a class="btn" id="btn-pdf" href="/api/download/pdf">Download PDF</a>
+        <a class="btn" id="btn-excel" href="/api/download/excel">Download Excel</a>
+      </div>
+    </section>
+
+    <section class="card email-card">
+      <h3>Email Preview</h3>
+      <p class="hint">Review recipients and copy, then send. Create Report never sends mail.</p>
+      <label>To<textarea id="email-to" rows="3"></textarea></label>
+      <label>CC<textarea id="email-cc" rows="2"></textarea></label>
+      <label>Subject<input id="email-subject" type="text" /></label>
+      <label>Body<textarea id="email-body" rows="6"></textarea></label>
+      <p class="attachment" id="email-attachment">Attachment: none</p>
+      <button type="button" class="btn primary" id="btn-send">Send Email</button>
+    </section>
+  </main>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

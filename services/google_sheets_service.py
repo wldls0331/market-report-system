@@ -38,7 +38,7 @@ from config.google_config import (
     sheets_token_file,
 )
 from config.paths import DATA_DIR
-from config.runtime import is_streamlit_cloud, supports_browser_oauth
+from config.runtime import is_hosted, supports_browser_oauth
 from services.working_day_service import format_sheet_name, previous_week_last_working_day
 
 try:
@@ -305,10 +305,10 @@ def _assert_google_ready_if_configured() -> None:
         return
     missing = missing_google_sheets_secret_keys()
     if missing:
-        raise DataServiceError("Streamlit Secrets missing: " + ", ".join(missing))
+        raise DataServiceError("Google Sheets environment variables missing: " + ", ".join(missing))
     invalid = invalid_google_oauth_secret_keys()
     if invalid:
-        raise DataServiceError("Streamlit Secrets invalid: " + " ".join(invalid))
+        raise DataServiceError("Google Sheets OAuth secrets invalid: " + " ".join(invalid))
     if label == "Authorization Required":
         raise DataServiceError(
             "Google Sheets authorization required. Click Authorize Google Sheets in the sidebar."
@@ -357,8 +357,8 @@ def _sheets_user_credentials(*, allow_browser: bool, require_write: bool = False
     if not allow_browser or not supports_browser_oauth():
         raise DataServiceError(
             "Google Sheets authorization required. "
-            "Set [google] client_id, client_secret, and refresh_token in Streamlit Secrets, "
-            "or authorize locally."
+            "Set GOOGLE_SHEET_ID, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and "
+            "GOOGLE_REFRESH_TOKEN, or authorize locally with credentials.json."
         )
     flow = InstalledAppFlow.from_client_secrets_file(str(creds_path), list(SHEETS_SCOPES))
     credentials = flow.run_local_server(
@@ -400,7 +400,7 @@ def _google_credentials(*, require_write: bool = False):
     if client_id and client_secret and refresh_token:
         invalid = invalid_google_oauth_secret_keys()
         if invalid:
-            raise DataServiceError("Streamlit Secrets invalid: " + " ".join(invalid))
+            raise DataServiceError("Google Sheets OAuth secrets invalid: " + " ".join(invalid))
         try:
             return credentials_from_refresh_token(
                 client_id=client_id,
@@ -415,19 +415,19 @@ def _google_credentials(*, require_write: bool = False):
             if "invalid_client" in detail.lower():
                 raise DataServiceError(
                     "Google Sheets OAuth client_id was not recognized. "
-                    "Copy [google] client_id and client_secret from credentials.json "
+                    "Copy GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET from credentials.json "
                     "installed.client_id and installed.client_secret, "
-                    "and copy refresh_token from sheets_token.json."
+                    "and copy GOOGLE_REFRESH_TOKEN from sheets_token.json."
                 ) from exc
             raise DataServiceError(f"Google Sheets secret refresh failed: {exc}") from exc
 
-    if is_streamlit_cloud() or not google_credentials_file().exists():
+    if is_hosted() or not google_credentials_file().exists():
         missing = missing_google_sheets_secret_keys()
         if missing:
-            raise DataServiceError("Streamlit Secrets missing: " + ", ".join(missing))
+            raise DataServiceError("Google Sheets environment variables missing: " + ", ".join(missing))
         raise DataServiceError(
             "Google Sheets could not authenticate. "
-            "Set [google] sheet_id, client_id, client_secret, and refresh_token in Streamlit Secrets."
+            "Set GOOGLE_SHEET_ID, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and GOOGLE_REFRESH_TOKEN."
         )
 
     service_account = google_service_account_info()
@@ -477,6 +477,7 @@ def _google_client(*, require_write: bool = False):
 
 
 def open_spreadsheet(*, require_write: bool = False):
+    """Public Sheets connection used by INPUT read/write. Wraps `_google_client`."""
     return _google_client(require_write=require_write)
 
 

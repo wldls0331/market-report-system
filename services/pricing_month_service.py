@@ -1,4 +1,4 @@
-"""Pricing month (Paper / MOPS WMA) derived from Data Reference Date."""
+"""Pricing month (Paper / MOPS WMA) derived from INPUT Report Date (B4)."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ MONTH_ABBR = (
     "DEC",
 )
 
-ROLLOVER_DAY = 25
+ROLLOVER_DAY = 27
 
 
 @dataclass(frozen=True)
@@ -71,6 +71,7 @@ class YearMonth:
 
 
 def default_pricing_month(as_of_date: dt.date) -> YearMonth:
+    """B4 day 1-26 → that month. Day 27-end → next month."""
     current = YearMonth.from_date(as_of_date)
     if as_of_date.day >= ROLLOVER_DAY:
         return current.next_month()

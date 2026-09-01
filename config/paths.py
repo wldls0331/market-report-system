@@ -9,7 +9,7 @@ DATA_DIR = PROJECT_ROOT / "data"
 
 
 def session_output_dir() -> Path:
-    """Per-browser-session output on Streamlit Cloud; shared output/ locally."""
+    """Dated Excel/PDF output under project output/. Hosted disks are ephemeral."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     try:
         from config.runtime import is_streamlit_cloud

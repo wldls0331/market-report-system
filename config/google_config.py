@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from config.paths import PROJECT_ROOT
-from config.runtime import is_streamlit_cloud
+from config.runtime import is_hosted
 
 _DOTENV_LOADED = False
 TOKEN_URI = "https://oauth2.googleapis.com/token"
@@ -156,7 +156,7 @@ def _google_section_value(key: str) -> str:
 
 
 def google_sheet_id() -> str:
-    return _google_section_value("sheet_id") or _secret("GOOGLE_SHEET_ID")
+    return _google_section_value("sheet_id") or _compact_secret(_secret("GOOGLE_SHEET_ID"))
 
 
 def google_sheet_url() -> str:
@@ -212,14 +212,20 @@ def _oauth_triplet(section_name: str) -> tuple[str, str, str]:
 
 def google_oauth_secrets() -> tuple[str, str, str]:
     return (
-        _google_section_value("client_id"),
-        _google_section_value("client_secret"),
-        _google_section_value("refresh_token"),
+        _google_section_value("client_id") or _compact_secret(_secret("GOOGLE_CLIENT_ID")),
+        _google_section_value("client_secret") or _compact_secret(_secret("GOOGLE_CLIENT_SECRET")),
+        _google_section_value("refresh_token") or _compact_secret(_secret("GOOGLE_REFRESH_TOKEN")),
     )
 
 
 def gmail_oauth_secrets() -> tuple[str, str, str]:
-    return _oauth_triplet("gmail")
+    client_id, client_secret, refresh_token = _oauth_triplet("gmail")
+    client_id = client_id or _compact_secret(_secret("GMAIL_CLIENT_ID") or _secret("GOOGLE_CLIENT_ID"))
+    client_secret = (
+        client_secret or _compact_secret(_secret("GMAIL_CLIENT_SECRET") or _secret("GOOGLE_CLIENT_SECRET"))
+    )
+    refresh_token = refresh_token or _compact_secret(_secret("GMAIL_REFRESH_TOKEN"))
+    return client_id, client_secret, refresh_token
 
 
 def has_google_secret_oauth() -> bool:
@@ -270,14 +276,14 @@ def has_google_sheets_secrets() -> bool:
 def missing_google_sheets_secret_keys() -> list[str]:
     missing: list[str] = []
     if not google_sheet_id():
-        missing.append("[google].sheet_id")
+        missing.append("GOOGLE_SHEET_ID")
     client_id, client_secret, refresh_token = google_oauth_secrets()
     if not client_id:
-        missing.append("[google].client_id")
+        missing.append("GOOGLE_CLIENT_ID")
     if not client_secret:
-        missing.append("[google].client_secret")
+        missing.append("GOOGLE_CLIENT_SECRET")
     if not refresh_token:
-        missing.append("[google].refresh_token")
+        missing.append("GOOGLE_REFRESH_TOKEN")
     return missing
 
 
@@ -287,12 +293,12 @@ def invalid_google_oauth_secret_keys() -> list[str]:
     client_id, _client_secret, refresh_token = google_oauth_secrets()
     if client_id and not client_id.endswith(".apps.googleusercontent.com"):
         errors.append(
-            "[google].client_id must be credentials.json -> installed.client_id "
+            "GOOGLE_CLIENT_ID must be credentials.json -> installed.client_id "
             "(ends with .apps.googleusercontent.com)"
         )
     if refresh_token and not refresh_token.startswith("1//"):
         errors.append(
-            "[google].refresh_token must be sheets_token.json -> refresh_token"
+            "GOOGLE_REFRESH_TOKEN must be sheets_token.json -> refresh_token"
         )
     return errors
 
@@ -303,8 +309,8 @@ def has_gmail_secret_oauth() -> bool:
 
 
 def persist_oauth_token(path: Path, payload: str) -> None:
-    """Write local token files only. Streamlit Cloud filesystem is ephemeral."""
-    if is_streamlit_cloud():
+    """Write local token files only. Hosted filesystems are ephemeral."""
+    if is_hosted():
         return
     try:
         path.write_text(payload, encoding="utf-8")

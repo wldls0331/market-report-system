@@ -66,6 +66,41 @@ AUTO_THIS_WEEK = "this_week_friday"
 AUTO_PREV_WEEK = "previous_week_friday"
 AUTO_TWO_WEEKS = "two_weeks_ago_friday"
 
+# Fixed INPUT addresses. All auto dates are computed from B4, never TODAY().
+REPORT_DATE_CELL = "B4"
+PRICING_MONTH_CELL = "B5"
+THIS_WEEK_CELL = "B8"
+PREV_WEEK_CELL = "B9"
+TWO_WEEKS_CELL = "B10"
+HOLIDAY_RANGE = "$F$2:$F$500"
+
+PRICING_MONTH_FORMULA = (
+    f'=IF({REPORT_DATE_CELL}="","",'
+    f'INDEX({{"JAN";"FEB";"MAR";"APR";"MAY";"JUN";"JUL";"AUG";"SEP";"OCT";"NOV";"DEC"}},'
+    f'MONTH(DATE(YEAR({REPORT_DATE_CELL}),MONTH({REPORT_DATE_CELL})+'
+    f'IF(DAY({REPORT_DATE_CELL})>=27,1,0),1)))&" "&'
+    f'YEAR(DATE(YEAR({REPORT_DATE_CELL}),MONTH({REPORT_DATE_CELL})+'
+    f'IF(DAY({REPORT_DATE_CELL})>=27,1,0),1)))'
+)
+THIS_WEEK_FORMULA = (
+    f'=IF({REPORT_DATE_CELL}="","",'
+    f'WORKDAY.INTL({REPORT_DATE_CELL}-WEEKDAY({REPORT_DATE_CELL},2)+6,-1,"0000011",{HOLIDAY_RANGE}))'
+)
+PREV_WEEK_FORMULA = (
+    f'=IF({REPORT_DATE_CELL}="","",'
+    f'WORKDAY.INTL({REPORT_DATE_CELL}-WEEKDAY({REPORT_DATE_CELL},2)-1,-1,"0000011",{HOLIDAY_RANGE}))'
+)
+TWO_WEEKS_FORMULA = (
+    f'=IF({REPORT_DATE_CELL}="","",'
+    f'WORKDAY.INTL({REPORT_DATE_CELL}-WEEKDAY({REPORT_DATE_CELL},2)-8,-1,"0000011",{HOLIDAY_RANGE}))'
+)
+AUTO_FORMULAS: dict[str, str] = {
+    AUTO_PRICING_MONTH: PRICING_MONTH_FORMULA,
+    AUTO_THIS_WEEK: THIS_WEEK_FORMULA,
+    AUTO_PREV_WEEK: PREV_WEEK_FORMULA,
+    AUTO_TWO_WEEKS: TWO_WEEKS_FORMULA,
+}
+
 
 @dataclass(frozen=True)
 class InputRow:
@@ -116,7 +151,7 @@ def input_layout() -> tuple[InputRow, ...]:
             kind="auto",
             label="Pricing Month",
             key=AUTO_PRICING_MONTH,
-            hint="Auto from Report Date: day 1-24 same month, day 25-end next month",
+            hint="Auto from B4. Day 1-26 same month, day 27-end next month",
         ),
         InputRow(kind="spacer"),
         InputRow(kind="section", label="WEEKLY DATES"),
@@ -124,19 +159,19 @@ def input_layout() -> tuple[InputRow, ...]:
             kind="auto",
             label="This Week Friday",
             key=AUTO_THIS_WEEK,
-            hint="Singapore working-day Friday of this week",
+            hint="Friday of the calendar week that contains B4. Holiday → previous SG working day",
         ),
         InputRow(
             kind="auto",
             label="Previous Week Friday",
             key=AUTO_PREV_WEEK,
-            hint="Chart data reference / historical date",
+            hint="This Week Friday minus 7 days, holiday-adjusted",
         ),
         InputRow(
             kind="auto",
             label="Two Weeks Ago Friday",
             key=AUTO_TWO_WEEKS,
-            hint="Older chart historical date",
+            hint="This Week Friday minus 14 days, holiday-adjusted",
         ),
         InputRow(kind="spacer"),
         InputRow(kind="section", label="PAPER / MOPS"),

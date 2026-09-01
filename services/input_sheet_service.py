@@ -19,17 +19,29 @@ from config.cell_mapping import (
     WORLDWIDE_NEW_POINT_CELLS,
 )
 from config.input_sheet import (
+    AUTO_FORMULAS,
     AUTO_PREV_WEEK,
     AUTO_PRICING_MONTH,
     AUTO_REPORT_DATE,
     AUTO_THIS_WEEK,
     AUTO_TWO_WEEKS,
     INPUT_SHEET_NAME,
+    PREV_WEEK_FORMULA,
+    PRICING_MONTH_FORMULA,
+    THIS_WEEK_FORMULA,
+    TWO_WEEKS_FORMULA,
     InputRow,
     input_layout,
 )
 from services.chart_service import shift_weekly_chart_window
 from services.comment_service import TBN, compose_comment_lines, compose_strategy_text
+from services.pricing_month_service import YearMonth, default_pricing_month
+from services.working_day_service import (
+    format_report_title,
+    format_sheet_name,
+    singapore_public_holiday_dates,
+    weekly_fridays,
+)
 from services.google_sheets_service import (
     EMAIL_RECIPIENTS_SHEET,
     DataServiceError,
@@ -40,18 +52,18 @@ from services.google_sheets_service import (
     _stringify,
     find_report_worksheet,
     latest_report_sheet,
-    open_spreadsheet,
-)
-from services.pricing_month_service import YearMonth, default_pricing_month
-from services.working_day_service import (
-    format_report_title,
-    format_sheet_name,
-    weekly_fridays,
 )
 
 
 def _layout_rows() -> tuple[InputRow, ...]:
     return input_layout()
+
+
+def _spreadsheet(*, require_write: bool = False):
+    """Lazy import so Streamlit reloads cannot hit a half-loaded google_sheets_service."""
+    from services.google_sheets_service import open_spreadsheet as connect_spreadsheet
+
+    return connect_spreadsheet(require_write=require_write)
 
 
 def _parse_input_date(value: Any) -> dt.date | None:
@@ -192,6 +204,18 @@ def _format_input_sheet(spreadsheet, worksheet) -> None:
                 "fields": "hiddenByUser",
             }
         },
+        {
+            "updateDimensionProperties": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "dimension": "COLUMNS",
+                    "startIndex": 5,
+                    "endIndex": 6,
+                },
+                "properties": {"hiddenByUser": True},
+                "fields": "hiddenByUser",
+            }
+        },
     ]
     try:
         spreadsheet.batch_update({"requests": requests})
@@ -212,6 +236,8 @@ def _build_input_grid(previous_hints: dict[str, str], existing: dict[str, Any]) 
             rows.append([spec.label, "", "", ""])
             continue
         value = existing.get(spec.key, "")
+        if spec.kind == "auto":
+            value = AUTO_FORMULAS.get(spec.key, value)
         hint = spec.hint
         if spec.editable and spec.key in previous_hints:
             hint = f"{spec.hint}  {previous_hints[spec.key]}"
@@ -237,12 +263,12 @@ def _required_keys() -> set[str]:
 
 
 def ensure_input_sheet(*, refresh_auto: bool = True):
-    spreadsheet = open_spreadsheet(require_write=True)
+    spreadsheet = _spreadsheet(require_write=True)
     try:
         worksheet = spreadsheet.worksheet(INPUT_SHEET_NAME)
         created = False
     except Exception:
-        worksheet = spreadsheet.add_worksheet(title=INPUT_SHEET_NAME, rows=80, cols=4)
+        worksheet = spreadsheet.add_worksheet(title=INPUT_SHEET_NAME, rows=250, cols=6)
         created = True
 
     mapping = {} if created else _row_map(worksheet)
@@ -272,9 +298,21 @@ def ensure_input_sheet(*, refresh_auto: bool = True):
     return spreadsheet, worksheet
 
 
+def _write_holiday_list(worksheet) -> None:
+    try:
+        worksheet.resize(rows=max(worksheet.row_count, 250), cols=max(worksheet.col_count, 6))
+    except Exception:
+        pass
+    years = list(range(2024, 2033))
+    dates = singapore_public_holiday_dates(*years)
+    rows: list[list[str]] = [["sg_holidays"]]
+    rows.extend([[item.isoformat()] for item in dates])
+    worksheet.update(range_name="F1:F" + str(len(rows)), values=rows, value_input_option="USER_ENTERED")
+
+
 def refresh_input_auto_fields(spreadsheet=None, worksheet=None) -> None:
     if spreadsheet is None or worksheet is None:
-        spreadsheet = open_spreadsheet(require_write=True)
+        spreadsheet = _spreadsheet(require_write=True)
         try:
             worksheet = spreadsheet.worksheet(INPUT_SHEET_NAME)
         except Exception as exc:
@@ -285,25 +323,23 @@ def refresh_input_auto_fields(spreadsheet=None, worksheet=None) -> None:
     report_date = _parse_input_date(raw_date)
     if report_date is None:
         latest = latest_report_sheet()
-        report_date = latest[0] if latest else dt.date.today()
-        if report_row:
+        if latest and report_row:
             worksheet.update(
-                f"B{report_row}",
-                [[report_date.isoformat()]],
+                range_name=f"B{report_row}",
+                values=[[latest[0].isoformat()]],
                 value_input_option="USER_ENTERED",
             )
-    this_week, prev_week, two_weeks = weekly_fridays(report_date)
-    month = default_pricing_month(report_date)
+    _write_holiday_list(worksheet)
     updates = []
-    for key, value in (
-        (AUTO_PRICING_MONTH, month.label()),
-        (AUTO_THIS_WEEK, this_week.isoformat()),
-        (AUTO_PREV_WEEK, prev_week.isoformat()),
-        (AUTO_TWO_WEEKS, two_weeks.isoformat()),
+    for key, formula in (
+        (AUTO_PRICING_MONTH, PRICING_MONTH_FORMULA),
+        (AUTO_THIS_WEEK, THIS_WEEK_FORMULA),
+        (AUTO_PREV_WEEK, PREV_WEEK_FORMULA),
+        (AUTO_TWO_WEEKS, TWO_WEEKS_FORMULA),
     ):
         row = mapping.get(key)
         if row:
-            updates.append({"range": f"B{row}", "values": [[value]]})
+            updates.append({"range": f"B{row}", "values": [[formula]]})
     if updates:
         worksheet.batch_update(updates, value_input_option="USER_ENTERED")
 
@@ -326,14 +362,14 @@ def load_input_data() -> ReportData:
     if not connected:
         raise DataServiceError("Google Sheets is not connected.")
     try:
-        spreadsheet = open_spreadsheet()
+        spreadsheet = _spreadsheet()
         try:
             worksheet = spreadsheet.worksheet(INPUT_SHEET_NAME)
         except Exception:
             spreadsheet, worksheet = ensure_input_sheet(refresh_auto=True)
         else:
             try:
-                write_book = open_spreadsheet(require_write=True)
+                write_book = _spreadsheet(require_write=True)
                 write_ws = write_book.worksheet(INPUT_SHEET_NAME)
                 refresh_input_auto_fields(write_book, write_ws)
                 worksheet = write_ws
@@ -347,7 +383,7 @@ def load_input_data() -> ReportData:
             raise DataServiceError(
                 "Google Sheets write permission is required to manage the INPUT sheet. "
                 "Authorize Google Sheets locally, then copy the new sheets_token.json "
-                "refresh_token into Streamlit Secrets."
+                "refresh_token into GOOGLE_REFRESH_TOKEN."
             ) from exc
         raise DataServiceError(f"Could not load INPUT sheet: {exc}") from exc
 
@@ -380,7 +416,7 @@ def load_input_data() -> ReportData:
 
 
 def dated_report_exists(report_date: dt.date) -> bool:
-    spreadsheet = open_spreadsheet()
+    spreadsheet = _spreadsheet()
     return find_report_worksheet(spreadsheet, report_date) is not None
 
 
@@ -461,7 +497,7 @@ def _apply_inputs_to_report_worksheet(
 
 def create_or_update_report_from_input(record: ReportData) -> tuple[str, bool]:
     """Copy latest dated sheet if needed, then write INPUT values. Returns (sheet_name, is_update)."""
-    spreadsheet = open_spreadsheet(require_write=True)
+    spreadsheet = _spreadsheet(require_write=True)
     report_date = record.report_date
     target_name = format_sheet_name(report_date)
     existing = find_report_worksheet(spreadsheet, report_date)

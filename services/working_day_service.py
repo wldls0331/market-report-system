@@ -1,3 +1,12 @@
+"""Singapore working-day and weekly-Friday helpers. Single source for date math.
+
+INPUT B4 = Report Date.
+This Week Friday = Friday of B4's calendar week (Mon–Sun).
+Previous / Two Weeks Ago = that Friday minus 7 / 14 days.
+If the Friday is a weekend or Singapore public holiday, walk back to the
+previous Singapore working day.
+"""
+
 from __future__ import annotations
 
 import datetime as dt
@@ -5,6 +14,26 @@ import datetime as dt
 import holidays
 
 _SG_HOLIDAYS: dict[int, object] = {}
+
+__all__ = [
+    "WorkingDayError",
+    "friday_of_week",
+    "format_data_reference_display",
+    "format_output_stem",
+    "format_pdf_filename",
+    "format_report_title",
+    "format_sheet_name",
+    "is_singapore_working_day",
+    "last_working_day_of_week",
+    "previous_singapore_working_day",
+    "previous_week_last_working_day",
+    "singapore_holiday_name",
+    "singapore_public_holiday_dates",
+    "singapore_working_day_on_or_before",
+    "validate_report_date",
+    "week_starting_monday",
+    "weekly_fridays",
+]
 
 
 class WorkingDayError(ValueError):
@@ -17,6 +46,20 @@ def _singapore_holidays(year: int):
         cached = holidays.country_holidays("SG", years=year)
         _SG_HOLIDAYS[year] = cached
     return cached
+
+
+def singapore_public_holiday_dates(*years: int) -> list[dt.date]:
+    """Singapore public holidays for INPUT column F (WORKDAY.INTL list)."""
+    dates: list[dt.date] = []
+    seen: set[dt.date] = set()
+    for year in years:
+        for raw in _singapore_holidays(year).keys():
+            day = raw.date() if isinstance(raw, dt.datetime) else raw
+            if isinstance(day, dt.date) and day not in seen:
+                seen.add(day)
+                dates.append(day)
+    dates.sort()
+    return dates
 
 
 def singapore_holiday_name(date: dt.date) -> str | None:
@@ -87,25 +130,35 @@ def format_pdf_filename(date: dt.date) -> str:
     return f"Weekly Report_Bunkering_{date.strftime('%y.%m.%d')}.pdf"
 
 
+def singapore_working_day_on_or_before(date: dt.date) -> dt.date:
+    """If date is a weekend or Singapore holiday, walk back to the previous working day."""
+    cursor = date
+    while not is_singapore_working_day(cursor):
+        cursor -= dt.timedelta(days=1)
+    return cursor
+
+
 def friday_of_week(date: dt.date) -> dt.date:
+    """Calendar Friday of the Monday-start week that contains `date`."""
     return week_starting_monday(date) + dt.timedelta(days=4)
 
 
 def last_working_day_of_week(date: dt.date) -> dt.date:
     """Friday of that week, or the last Singapore working day if Friday is off."""
-    friday = friday_of_week(date)
-    monday = week_starting_monday(date)
-    cursor = friday
-    while cursor >= monday:
-        if is_singapore_working_day(cursor):
-            return cursor
-        cursor -= dt.timedelta(days=1)
-    return previous_singapore_working_day(monday)
+    return singapore_working_day_on_or_before(friday_of_week(date))
 
 
 def weekly_fridays(report_date: dt.date) -> tuple[dt.date, dt.date, dt.date]:
-    """This week, previous week, and two weeks ago (Singapore Friday working days)."""
-    this_week = last_working_day_of_week(report_date)
-    previous_week = last_working_day_of_week(report_date - dt.timedelta(days=7))
-    two_weeks_ago = last_working_day_of_week(report_date - dt.timedelta(days=14))
-    return this_week, previous_week, two_weeks_ago
+    """This / previous / two-weeks-ago Friday from B4's calendar week, holiday-adjusted.
+
+    This Week Friday is the Friday of the week that contains `report_date`.
+    It is not the previous week's Friday.
+    """
+    this_friday = friday_of_week(report_date)
+    previous_friday = this_friday - dt.timedelta(days=7)
+    two_weeks_friday = this_friday - dt.timedelta(days=14)
+    return (
+        singapore_working_day_on_or_before(this_friday),
+        singapore_working_day_on_or_before(previous_friday),
+        singapore_working_day_on_or_before(two_weeks_friday),
+    )

@@ -1,7 +1,7 @@
 """PDF export.
 
 Windows local: Microsoft Excel COM (print ranges, charts).
-Linux / Streamlit Cloud: reportlab renderer from Google Sheets values.
+Linux / Render: reportlab renderer from Google Sheets values.
 """
 
 from __future__ import annotations

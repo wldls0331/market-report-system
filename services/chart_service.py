@@ -91,3 +91,83 @@ def shift_weekly_chart_window(
 def preserve_weekly_chart_ranges() -> None:
     """Kept for call-site compatibility. Shift is applied in excel_service."""
     return None
+
+
+def _chart_axis_label(value: Any) -> str:
+    parsed = excel_value_as_date(value)
+    if parsed is not None:
+        return f"{parsed.month}/{parsed.day}"
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    lowered = text.lower()
+    if "assumption" in lowered or "금주" in text:
+        return "This week"
+    return text
+
+
+def _chart_number(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip().replace(",", "")
+    if not text or text.upper() in {"TBN", "-"}:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def korea_premium_chart(get_value: GetValue) -> dict[str, Any]:
+    """Korea Major 4 Refiners VLSFO Premium. Source C22:F26, series labels B23:B26."""
+    labels = [_chart_axis_label(get_value(address)) for address in ("C22", "D22", "E22", "F22")]
+    series = []
+    for row in KOREA_CHART_VALUE_ROWS:
+        series.append(
+            {
+                "name": str(get_value(f"B{row}") or "").strip() or f"Series {row}",
+                "data": [_chart_number(get_value(f"{col}{row}")) for col in KOREA_CHART_VALUE_COLS],
+            }
+        )
+    return {
+        "title": "Korea Major 4 Refiners - VLSFO Premium Trends",
+        "labels": labels,
+        "series": series,
+    }
+
+
+def worldwide_vlsfo_chart(get_value: GetValue) -> dict[str, Any]:
+    """Worldwide Ports VLSFO. Excel chart source P22:R26; S22:S26 is this-week assumption."""
+    labels = [_chart_axis_label(get_value(address)) for address in ("P22", "Q22", "R22", "S22")]
+    series = []
+    for row in WORLDWIDE_CHART_VALUE_ROWS:
+        series.append(
+            {
+                "name": str(get_value(f"O{row}") or "").strip() or f"Series {row}",
+                "data": [_chart_number(get_value(f"{col}{row}")) for col in WORLDWIDE_CHART_VALUE_COLS],
+            }
+        )
+    return {
+        "title": "Worldwide Ports - VLSFO Bunker Price Trend",
+        "labels": labels,
+        "series": series,
+    }
+
+
+def spread_trend_chart(get_value: GetValue) -> dict[str, Any]:
+    """Current-week A−B spreads from AF:AI formula cells. Not the helper table itself."""
+    labels = ["SG vs Paper", "ZS vs Paper", "KR vs Paper", "KR − SG", "KR − ZS"]
+    rows = (24, 25, 26, 27, 28)
+    return {
+        "title": "SPREAD TREND (BUNKER WIRE - MOPS SINGAPORE 0.5%)",
+        "labels": labels,
+        "series": [
+            {"name": "FO", "data": [_chart_number(get_value(f"AG{row}")) for row in rows]},
+            {"name": "GO", "data": [_chart_number(get_value(f"AH{row}")) for row in rows]},
+            {"name": "HSFO", "data": [_chart_number(get_value(f"AI{row}")) for row in rows]},
+        ],
+    }

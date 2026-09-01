@@ -7,7 +7,6 @@ from config.cell_mapping import (
     REPORT_SHEET_CELLS,
     SHEET_NAME_PATTERN,
     SHEET_NAME_SUFFIX,
-    STRATEGY_FIELDS,
     chart_window_cells,
     snapshot_cells,
 )
@@ -22,7 +21,6 @@ __all__ = [
     "REPORT_SHEET_CELLS",
     "SHEET_NAME_PATTERN",
     "SHEET_NAME_SUFFIX",
-    "STRATEGY_FIELDS",
     "TEMPLATE_DIR",
     "chart_window_cells",
     "find_template",
