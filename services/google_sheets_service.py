@@ -257,19 +257,37 @@ def _session_set(key: str, value: Any) -> None:
 
 
 def sheets_status() -> tuple[bool, str]:
-    cached = _session_get("_sheets_status_result")
+    from services.sheets_cache import STATUS_TTL_SECONDS, cache_get, cache_set
+
+    cached = cache_get("sheets_status")
     if isinstance(cached, tuple) and len(cached) == 2:
         return cached[0], cached[1]
+    session_cached = _session_get("_sheets_status_result")
+    if isinstance(session_cached, tuple) and len(session_cached) == 2:
+        return session_cached[0], session_cached[1]
     if not google_sheet_id():
         result = (False, "Not Connected")
+        cache_set("sheets_status", result, STATUS_TTL_SECONDS)
         _session_set("_sheets_status_result", result)
         return result
     try:
-        spreadsheet = _google_client()
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+
+        from services.perf import timed
+
+        with timed("google sheets auth"):
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(_google_client)
+                spreadsheet = future.result(timeout=12)
         title = str(spreadsheet.title or "").strip()
         _session_set("_spreadsheet_title_live", title)
         _session_set("_sheets_error", "")
+        cache_set("spreadsheet_title", title, STATUS_TTL_SECONDS)
         result = (True, "Connected")
+    except FuturesTimeout:
+        _session_set("_spreadsheet_title_live", "")
+        _session_set("_sheets_error", "Google Sheets timed out.")
+        result = (False, "Not Connected")
     except DataServiceError as exc:
         _session_set("_spreadsheet_title_live", "")
         _session_set("_sheets_error", str(exc))
@@ -281,11 +299,17 @@ def sheets_status() -> tuple[bool, str]:
         _session_set("_spreadsheet_title_live", "")
         _session_set("_sheets_error", str(exc))
         result = (False, "Not Connected")
+    cache_set("sheets_status", result, STATUS_TTL_SECONDS)
     _session_set("_sheets_status_result", result)
     return result
 
 
 def spreadsheet_title() -> str:
+    from services.sheets_cache import cache_get
+
+    cached = cache_get("spreadsheet_title")
+    if isinstance(cached, str) and cached:
+        return cached
     cached = _session_get("_spreadsheet_title_live")
     if cached:
         return str(cached)
@@ -593,6 +617,11 @@ def _parse_recipient_rows(rows: list[list[str]]) -> list[EmailRecipient]:
 
 
 def load_email_recipients_result() -> tuple[list[EmailRecipient], str | None]:
+    from services.sheets_cache import RECIPIENTS_TTL_SECONDS, cache_get, cache_set
+
+    cached = cache_get("email_recipients")
+    if cached is not None:
+        return cached
     _assert_google_ready_if_configured()
     connected, _label = sheets_status()
     if connected:
@@ -600,8 +629,12 @@ def load_email_recipients_result() -> tuple[list[EmailRecipient], str | None]:
             spreadsheet = _google_client()
             worksheet = _recipients_worksheet(spreadsheet)
             if worksheet is None:
-                return [], "Email Recipients sheet not found"
-            return _parse_recipient_rows(worksheet.get_all_values()), None
+                result = ([], "Email Recipients sheet not found")
+                cache_set("email_recipients", result, RECIPIENTS_TTL_SECONDS)
+                return result
+            result = (_parse_recipient_rows(worksheet.get_all_values()), None)
+            cache_set("email_recipients", result, RECIPIENTS_TTL_SECONDS)
+            return result
         except DataServiceError:
             raise
         except Exception as exc:

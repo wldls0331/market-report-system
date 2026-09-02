@@ -23,25 +23,30 @@ SHEET_NAME_SUFFIX = "보고자료"
 TITLE_CELL = "B1"
 TITLE_TEMPLATE = "{date}_WEEKLY BUNKERING REPORT"
 
-# PDF is exported as three separate 1-page ranges then merged.
-# Excel coalesces "$B$1:$L$47,$B$48:$L$76" into "$B$1:$L$76", so a single
-# PrintArea string cannot keep Korea and Spread on different pages.
-# Rows 22-27 are chart source tables plus a leftover bordered spacer row.
+# PDF is exported as separate 1-page ranges then merged.
+# Excel coalesces "$B$1:$L$47,$B$48:$L$76" into "$B$1:$L$76", so Spread
+# must not be included in Print Area if it is not a printed page.
 # Column N is a wide spacer; the old B:X FitWide=2 range put it on page 2.
 # AF:AI orange scratch pad is outside these ranges.
 PDF_PAGE_RANGES: tuple[str, ...] = (
-    "$B$1:$L$47",
+    "$B$1:$L$42",
     "$O$1:$X$47",
-    "$B$48:$L$76",
 )
 PDF_PRINT_AREA = ",".join(PDF_PAGE_RANGES)
 PDF_ORIENTATION_PORTRAIT = 1
 PDF_ORDER_OVER_THEN_DOWN = 2
 PDF_FIT_TO_PAGES_WIDE = 1
 PDF_FIT_TO_PAGES_TALL = 1
+# Default helper hide (worldwide chart source). Page 1 also hides 28-34.
 PDF_HELPER_ROWS = (22, 27)
 PDF_HELPER_COLUMNS = ("N",)
-EXPECTED_PDF_PAGES = 3
+# Page 1: chart table + retired Korea Bunker Market. Page 2: chart table only
+# so Worldwide Market comments in O29:O44 stay visible.
+PDF_PAGE_HIDDEN_ROWS: tuple[tuple[int, int], ...] = (
+    (22, 34),
+    (22, 27),
+)
+EXPECTED_PDF_PAGES = 2
 
 
 @dataclass(frozen=True)
@@ -189,6 +194,14 @@ WORLDWIDE_NEW_POINT_CELLS: dict[str, str] = {
     "R25": "jp_vlsfo",
     "R26": "zs_vlsfo",
 }
+# This Week assumption (column S) uses the same INPUT VLSFO prices.
+WORLDWIDE_THIS_WEEK_CELLS: dict[str, str] = {
+    "S23": "kr_vlsfo",
+    "S24": "sg_vlsfo",
+    "S25": "jp_vlsfo",
+    "S26": "zs_vlsfo",
+}
+WORLDWIDE_CHART_INPUT_KEYS: tuple[str, ...] = ("kr_vlsfo", "sg_vlsfo", "jp_vlsfo", "zs_vlsfo")
 
 # Copied with the sheet. Never overwrite these cells.
 FORMULA_CELLS: tuple[str, ...] = (
@@ -226,6 +239,8 @@ REQUIRED_LABELS: dict[str, str] = {
 # Korea Worldwide section is filled from the same Korea comment input.
 KOREA_WORLDWIDE_COMMENT_KEY = "comment_korea_worldwide"
 KOREA_COMMENT_SOURCE_KEY = "comment_korea"
+# Page 1 "※ Korea Bunker Market" heading + VLSFO/HSFO/LSMGO commentary.
+KOREA_BUNKER_MARKET_CELLS: tuple[str, ...] = ("B28", "B29", "B30", "B31", "B32")
 
 SALES_ASSUMPTION_HEADER_CELL = "B35"
 SALES_ASSUMPTION_HEADER_TEMPLATE = "※ Korea Refineries-VLSFO sales assumption for {month}"

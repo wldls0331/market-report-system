@@ -29,15 +29,23 @@ run.bat
 
 로컬 주소는 `http://localhost:8502` 입니다. (`8501`의 Bunker Document System은 사용하지 않습니다.)
 
-## Streamlit Community Cloud
+## Render
 
-Entrypoint: `app.py`
+기존 Render 웹 서비스가 GitHub `main`을 자동 배포합니다. Flask 앱 객체는 `server:app` 입니다.
 
-1. GitHub에 이 저장소를 push (인증 파일은 올리지 않음)
-2. [share.streamlit.io](https://share.streamlit.io)에서 앱 생성, Main file path = `app.py`
-3. Settings → Secrets에 `.streamlit/secrets.toml.example` 구조를 붙여넣고 값을 채움
+- Build: `pip install -r requirements.txt && python -m playwright install --with-deps chromium`
+- Start: `gunicorn server:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 180`
+- Health: `GET /` (Sheets/Gmail/News는 페이지 로드 후 async)
 
-Windows Excel COM은 Cloud에서 사용할 수 없습니다. Cloud에서는 Google Sheets 값으로 3-page PDF를 생성합니다.
+환경변수 (값은 Render Dashboard에만 저장):
+
+- `GOOGLE_SHEET_ID`
+- `GOOGLE_CLIENT_ID`
+- `GOOGLE_CLIENT_SECRET`
+- `GOOGLE_REFRESH_TOKEN` (`sheets_token.json`의 refresh_token)
+- `GMAIL_CLIENT_ID`
+- `GMAIL_CLIENT_SECRET`
+- `GMAIL_REFRESH_TOKEN` (`token.json`의 Gmail refresh_token, Sheets 토큰과 다름)
 
 ## Google Spreadsheet 구조
 
@@ -49,11 +57,9 @@ Cloud secrets 예시: `.streamlit/secrets.toml.example`
 
 ## Gmail
 
-OAuth 2.0, scope는 `https://www.googleapis.com/auth/gmail.send`만 요청합니다. Cloud에서는 refresh_token을 Streamlit Secrets에서 읽습니다.
+OAuth 2.0, scope는 `https://www.googleapis.com/auth/gmail.send`만 요청합니다. Render에서는 `GMAIL_*` 환경변수를 사용합니다. Send Email을 눌렀을 때만 발송합니다.
 
 ## Excel / PDF
 
-- 로컬 Windows: Microsoft Excel COM으로 차트 포함 3-page PDF
-- Linux / Streamlit Cloud: Excel COM 없이 Google Sheets 값으로 3-page PDF
-
-- PDF: `Weekly Report_Bunkering_YY.MM.DD.pdf`
+- PDF: HTML Preview를 Playwright/Chromium으로 A4 portrait 2페이지 (`Weekly Report_Bunkering_YY.MM.DD.pdf`)
+- Excel: openpyxl 워크북 다운로드. Windows COM PDF는 사용하지 않습니다.

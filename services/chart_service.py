@@ -27,6 +27,7 @@ from config.cell_mapping import (
     WORLDWIDE_CHART_VALUE_COLS,
     WORLDWIDE_CHART_VALUE_ROWS,
 )
+from services.supplier_premium_service import premium_chart_value
 
 GetValue = Callable[[str], Any]
 SetValue = Callable[[str, Any], None]
@@ -130,7 +131,7 @@ def korea_premium_chart(get_value: GetValue) -> dict[str, Any]:
         series.append(
             {
                 "name": str(get_value(f"B{row}") or "").strip() or f"Series {row}",
-                "data": [_chart_number(get_value(f"{col}{row}")) for col in KOREA_CHART_VALUE_COLS],
+                "data": [premium_chart_value(get_value(f"{col}{row}")) for col in KOREA_CHART_VALUE_COLS],
             }
         )
     return {

@@ -19,6 +19,7 @@ from config.cell_mapping import (
     PDF_HELPER_ROWS,
     PDF_ORDER_OVER_THEN_DOWN,
     PDF_ORIENTATION_PORTRAIT,
+    PDF_PAGE_HIDDEN_ROWS,
     PDF_PAGE_RANGES,
     PDF_PRINT_AREA,
 )
@@ -80,26 +81,34 @@ def _refresh_charts(worksheet) -> None:
             continue
 
 
+def _set_rows_hidden(worksheet, start: int, end: int, hidden: bool) -> None:
+    worksheet.Range(f"{start}:{end}").EntireRow.Hidden = hidden
+
+
 @contextmanager
 def _temporary_pdf_helper_view(worksheet):
-    """Hide backend helper rows/columns for PDF, then restore Excel visibility."""
-    row_start, row_end = PDF_HELPER_ROWS
-    row_range = f"{row_start}:{row_end}"
-    previous_rows_hidden = bool(worksheet.Range(f"{row_start}:{row_end}").EntireRow.Hidden)
+    """Hide helper columns for PDF, then restore. Row hides are applied per page."""
+    cover_start, cover_end = 22, 34
+    previous_rows_hidden = bool(worksheet.Range(f"{cover_start}:{cover_end}").EntireRow.Hidden)
     previous_cols_hidden: dict[str, bool] = {}
     for letter in PDF_HELPER_COLUMNS:
         previous_cols_hidden[letter] = bool(worksheet.Range(f"{letter}:{letter}").EntireColumn.Hidden)
 
-    worksheet.Range(row_range).EntireRow.Hidden = True
     for letter in PDF_HELPER_COLUMNS:
         worksheet.Range(f"{letter}:{letter}").EntireColumn.Hidden = True
     _set_charts_plot_hidden_cells(worksheet)
     try:
         yield
     finally:
-        worksheet.Range(row_range).EntireRow.Hidden = previous_rows_hidden
+        _set_rows_hidden(worksheet, cover_start, cover_end, previous_rows_hidden)
         for letter, hidden in previous_cols_hidden.items():
             worksheet.Range(f"{letter}:{letter}").EntireColumn.Hidden = hidden
+
+
+def _apply_page_row_visibility(worksheet, hidden_rows: tuple[int, int]) -> None:
+    _set_rows_hidden(worksheet, 22, 34, False)
+    start, end = hidden_rows
+    _set_rows_hidden(worksheet, start, end, True)
 
 
 def count_pdf_pages(pdf_path: Path) -> int:
@@ -123,7 +132,7 @@ def _merge_pdfs(parts: list[Path], output: Path) -> Path:
     try:
         import fitz
     except ImportError as exc:
-        raise PdfExportError("PyMuPDF is required to merge the 3-page report PDF.") from exc
+        raise PdfExportError("PyMuPDF is required to merge the report PDF.") from exc
 
     merged = fitz.open()
     try:
@@ -159,6 +168,8 @@ def prepare_sheet_and_export_pdf(excel_app, workbook, worksheet, pdf_path: Path)
                 excel_app.Calculate()
             _refresh_charts(worksheet)
             for index, rng in enumerate(PDF_PAGE_RANGES, start=1):
+                hidden_rows = PDF_PAGE_HIDDEN_ROWS[index - 1] if index <= len(PDF_PAGE_HIDDEN_ROWS) else PDF_HELPER_ROWS
+                _apply_page_row_visibility(worksheet, hidden_rows)
                 temp_path = pdf_path.parent / f"~{pdf_path.stem}_p{index}.pdf"
                 temps.append(temp_path)
                 apply_pdf_print_layout(worksheet, rng)

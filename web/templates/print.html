@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Market Report</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  <script src="{{ url_for('static', filename='chart.umd.min.js') }}"></script>
+</head>
+<body class="print-document">
+  <script id="preview-data" type="application/json">{{ preview | tojson }}</script>
+
+  {% include "report_body.html" %}
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+  <script>
+    applyPreview(JSON.parse(document.getElementById("preview-data").textContent));
+    Object.values(charts).forEach(function (chart) {
+      if (chart && typeof chart.resize === "function") chart.resize();
+    });
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () {
+        document.body.dataset.previewReady = "1";
+      });
+    });
+  </script>
+</body>
+</html>

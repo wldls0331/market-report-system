@@ -9,6 +9,7 @@ from config.cell_mapping import (
     COMMENT_FIELDS,
     DATE_CELLS,
     FORMULA_CELLS,
+    KOREA_BUNKER_MARKET_CELLS,
     KOREA_COMMENT_SOURCE_KEY,
     KOREA_WORLDWIDE_COMMENT_KEY,
     NUMBER_FIELDS,
@@ -17,6 +18,7 @@ from config.cell_mapping import (
     STRATEGY_FIELDS,
     TITLE_CELL,
     WORLDWIDE_NEW_POINT_CELLS,
+    WORLDWIDE_THIS_WEEK_CELLS,
 )
 from config.input_sheet import (
     AUTO_FORMULAS,
@@ -26,6 +28,9 @@ from config.input_sheet import (
     AUTO_THIS_WEEK,
     AUTO_TWO_WEEKS,
     INPUT_SHEET_NAME,
+    OBSOLETE_INPUT_KEYS,
+    PREMIUM_INPUT_HINT,
+    PREMIUM_INPUT_KEYS,
     PREV_WEEK_FORMULA,
     PRICING_MONTH_FORMULA,
     THIS_WEEK_FORMULA,
@@ -35,6 +40,7 @@ from config.input_sheet import (
 )
 from services.chart_service import shift_weekly_chart_window
 from services.comment_service import TBN, compose_comment_lines, compose_strategy_text
+from services.supplier_premium_service import parse_supplier_premium
 from services.pricing_month_service import YearMonth, default_pricing_month
 from services.working_day_service import (
     format_report_title,
@@ -273,7 +279,7 @@ def ensure_input_sheet(*, refresh_auto: bool = True):
 
     mapping = {} if created else _row_map(worksheet)
     missing_keys = _required_keys() - set(mapping)
-    if created or missing_keys:
+    if created or missing_keys or (OBSOLETE_INPUT_KEYS & set(mapping)):
         existing_values: dict[str, Any] = {}
         if mapping:
             values = worksheet.get("A1:D80") or []
@@ -281,6 +287,8 @@ def ensure_input_sheet(*, refresh_auto: bool = True):
                 row = values[row_number - 1] if row_number <= len(values) else []
                 existing_values[key] = row[1] if len(row) > 1 else ""
         previous_hints = _previous_hints(spreadsheet)
+        if existing_values.get("comment_korea") and not existing_values.get("comment_korea_worldwide"):
+            existing_values["comment_korea_worldwide"] = existing_values["comment_korea"]
         grid = _build_input_grid(previous_hints, existing_values)
         worksheet.update("A1:D80", grid, value_input_option="USER_ENTERED")
         _format_input_sheet(spreadsheet, worksheet)
@@ -342,6 +350,16 @@ def refresh_input_auto_fields(spreadsheet=None, worksheet=None) -> None:
             updates.append({"range": f"B{row}", "values": [[formula]]})
     if updates:
         worksheet.batch_update(updates, value_input_option="USER_ENTERED")
+    hint_updates = []
+    for key in PREMIUM_INPUT_KEYS:
+        row = mapping.get(key)
+        if row:
+            hint_updates.append({"range": f"C{row}", "values": [[PREMIUM_INPUT_HINT]]})
+    if hint_updates:
+        try:
+            worksheet.batch_update(hint_updates, value_input_option="USER_ENTERED")
+        except Exception:
+            pass
 
 
 def _read_input_values(worksheet) -> dict[str, str]:
@@ -354,27 +372,36 @@ def _read_input_values(worksheet) -> dict[str, str]:
     return result
 
 
-def load_input_data() -> ReportData:
-    from services.google_sheets_service import _assert_google_ready_if_configured, sheets_status
+def load_input_data(*, refresh_auto: bool = False, bypass_cache: bool = False) -> ReportData:
+    from services.google_sheets_service import _assert_google_ready_if_configured
+    from services.perf import timed
+    from services.sheets_cache import INPUT_TTL_SECONDS, cache_clear, cache_get, cache_set
+
+    if bypass_cache or refresh_auto:
+        cache_clear("input_data")
+    elif not refresh_auto:
+        cached = cache_get("input_data")
+        if cached is not None:
+            return cached
 
     _assert_google_ready_if_configured()
-    connected, _label = sheets_status()
-    if not connected:
-        raise DataServiceError("Google Sheets is not connected.")
     try:
-        spreadsheet = _spreadsheet()
-        try:
-            worksheet = spreadsheet.worksheet(INPUT_SHEET_NAME)
-        except Exception:
-            spreadsheet, worksheet = ensure_input_sheet(refresh_auto=True)
-        else:
+        with timed("input sheet read"):
+            spreadsheet = _spreadsheet()
             try:
-                write_book = _spreadsheet(require_write=True)
-                write_ws = write_book.worksheet(INPUT_SHEET_NAME)
-                refresh_input_auto_fields(write_book, write_ws)
-                worksheet = write_ws
+                worksheet = spreadsheet.worksheet(INPUT_SHEET_NAME)
             except Exception:
-                pass
+                spreadsheet, worksheet = ensure_input_sheet(refresh_auto=True)
+            else:
+                if refresh_auto:
+                    try:
+                        write_book = _spreadsheet(require_write=True)
+                        write_ws = write_book.worksheet(INPUT_SHEET_NAME)
+                        refresh_input_auto_fields(write_book, write_ws)
+                        worksheet = write_ws
+                    except Exception:
+                        pass
+            raw = _read_input_values(worksheet)
     except DataServiceError:
         raise
     except Exception as exc:
@@ -387,7 +414,6 @@ def load_input_data() -> ReportData:
             ) from exc
         raise DataServiceError(f"Could not load INPUT sheet: {exc}") from exc
 
-    raw = _read_input_values(worksheet)
     report_date = _parse_input_date(raw.get(AUTO_REPORT_DATE))
     if report_date is None:
         raise DataServiceError("INPUT Report Date is empty or invalid. Enter YYYY-MM-DD in column B.")
@@ -401,7 +427,9 @@ def load_input_data() -> ReportData:
         AUTO_TWO_WEEKS,
     }
     inputs = {key: value for key, value in raw.items() if key not in skip_keys}
-    return ReportData(
+    if not str(inputs.get(KOREA_WORLDWIDE_COMMENT_KEY) or "").strip() and str(inputs.get(KOREA_COMMENT_SOURCE_KEY) or "").strip():
+        inputs[KOREA_WORLDWIDE_COMMENT_KEY] = inputs[KOREA_COMMENT_SOURCE_KEY]
+    record = ReportData(
         report_date=report_date,
         data_reference_date=prev_week,
         pricing_month=month.iso_key(),
@@ -413,6 +441,8 @@ def load_input_data() -> ReportData:
             AUTO_TWO_WEEKS: two_weeks.isoformat(),
         },
     )
+    cache_set("input_data", record, INPUT_TTL_SECONDS)
+    return record
 
 
 def dated_report_exists(report_date: dt.date) -> bool:
@@ -461,6 +491,10 @@ def _apply_inputs_to_report_worksheet(
     )
 
     for item in NUMBER_FIELDS:
+        if item.section == "premium":
+            parsed = parse_supplier_premium(inputs.get(item.key))
+            set_value(item.cell, parsed["vlsfo"])
+            continue
         number = _parse_optional_number(inputs.get(item.key))
         set_value(item.cell, number)
         if item.label_cell and item.label_template:
@@ -474,14 +508,21 @@ def _apply_inputs_to_report_worksheet(
 
     for address, key in WORLDWIDE_NEW_POINT_CELLS.items():
         set_value(address, _parse_optional_number(inputs.get(key)))
+    for address, key in WORLDWIDE_THIS_WEEK_CELLS.items():
+        set_value(address, _parse_optional_number(inputs.get(key)))
 
     comment_inputs = dict(inputs)
-    worldwide = str(inputs.get(KOREA_WORLDWIDE_COMMENT_KEY, "") or "").strip()
-    comment_inputs[KOREA_WORLDWIDE_COMMENT_KEY] = worldwide or inputs.get(KOREA_COMMENT_SOURCE_KEY, "")
+    if not str(comment_inputs.get(KOREA_WORLDWIDE_COMMENT_KEY) or "").strip():
+        comment_inputs[KOREA_WORLDWIDE_COMMENT_KEY] = str(inputs.get(KOREA_COMMENT_SOURCE_KEY) or "")
     for item in COMMENT_FIELDS:
+        if item.key == KOREA_COMMENT_SOURCE_KEY:
+            continue
         lines = compose_comment_lines(comment_inputs.get(item.key, ""), len(item.cells))
         for address, line in zip(item.cells, lines):
             set_value(address, line or None)
+
+    for address in KOREA_BUNKER_MARKET_CELLS:
+        set_value(address, None)
 
     for item in STRATEGY_FIELDS:
         set_value(item.cell, compose_strategy_text(item.prefix, inputs.get(item.key, "")))

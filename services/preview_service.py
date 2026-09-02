@@ -7,16 +7,17 @@ from typing import Any
 
 from config.cell_mapping import (
     COMMENT_FIELDS,
-    KOREA_COMMENT_SOURCE_KEY,
     KOREA_WORLDWIDE_COMMENT_KEY,
     STRATEGY_FIELDS,
+    WORLDWIDE_CHART_INPUT_KEYS,
 )
 from config.email_config import default_body, default_subject
 from config.google_config import google_sheet_url
-from config.input_sheet import AUTO_PREV_WEEK, AUTO_THIS_WEEK, AUTO_TWO_WEEKS
-from config.paths import OUTPUT_DIR, session_output_dir
-from services.chart_service import korea_premium_chart, spread_trend_chart, worldwide_vlsfo_chart
-from services.excel_service import GenerateError, generate_market_report, output_excel_path
+from config.input_sheet import AUTO_PREV_WEEK, AUTO_THIS_WEEK, AUTO_TWO_WEEKS, INPUT_NUMBER_LABELS, PREMIUM_INPUT_KEYS
+from config.paths import OUTPUT_DIR, PROJECT_ROOT, session_output_dir
+from services.chart_service import korea_premium_chart, worldwide_vlsfo_chart
+from services.excel_service import GenerateError, generate_market_report, output_excel_path, parse_optional_number
+from services.supplier_premium_service import format_premium_signed, parse_supplier_premium
 from services.gmail_service import gmail_status
 from services.google_sheets_service import (
     DataServiceError,
@@ -53,11 +54,11 @@ REPORT_GRID_RANGE = "A1:AI80"
 
 def _safe_output_file(path: Path) -> Path | None:
     try:
-        resolved = path.resolve()
-        resolved.relative_to(OUTPUT_DIR.resolve())
-    except Exception:
+        if path.is_file() and path.stat().st_size > 0:
+            return path
+    except OSError:
         return None
-    return resolved if resolved.is_file() else None
+    return None
 
 
 def output_paths_for_date(report_date) -> dict[str, Path | None]:
@@ -85,6 +86,56 @@ def _file_status(report_date) -> dict[str, Any]:
         "has_excel": excel is not None,
         "has_pdf": pdf is not None,
     }
+
+
+def _supplier_premiums(inputs: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for key in PREMIUM_INPUT_KEYS:
+        raw = str(inputs.get(key) or "").strip()
+        parsed = parse_supplier_premium(raw)
+        rows.append(
+            {
+                "key": key,
+                "label": INPUT_NUMBER_LABELS.get(key, key),
+                "input": raw or "TBN",
+                "vlsfo": format_premium_signed(parsed["vlsfo"]),
+                "hsfo": format_premium_signed(parsed["hsfo"]),
+                "vlsfo_value": parsed["vlsfo"],
+                "hsfo_value": parsed["hsfo"],
+            }
+        )
+    return rows
+
+
+def _overlay_this_week_worldwide(chart: dict[str, Any], inputs: dict[str, Any]) -> dict[str, Any]:
+    series = list(chart.get("series") or [])
+    for index, key in enumerate(WORLDWIDE_CHART_INPUT_KEYS):
+        if index >= len(series):
+            break
+        data = list(series[index].get("data") or [])
+        if not data:
+            continue
+        try:
+            data[-1] = parse_optional_number(inputs.get(key))
+        except Exception:
+            data[-1] = None
+        series[index] = {**series[index], "data": data}
+    chart["series"] = series
+    return chart
+
+
+def _overlay_this_week_premium(chart: dict[str, Any], inputs: dict[str, Any]) -> dict[str, Any]:
+    series = list(chart.get("series") or [])
+    for index, key in enumerate(PREMIUM_INPUT_KEYS):
+        if index >= len(series):
+            break
+        data = list(series[index].get("data") or [])
+        if not data:
+            continue
+        data[-1] = parse_supplier_premium(inputs.get(key))["vlsfo"]
+        series[index] = {**series[index], "data": data}
+    chart["series"] = series
+    return chart
 
 
 def _tbn(value: Any) -> str:
@@ -137,26 +188,35 @@ def _empty_charts() -> dict[str, Any]:
     return {
         "korea_premium": {"title": "Korea Major 4 Refiners - VLSFO Premium Trends", "labels": [], "series": []},
         "worldwide_vlsfo": {"title": "Worldwide Ports - VLSFO Bunker Price Trend", "labels": [], "series": []},
-        "spread": {
-            "title": "SPREAD TREND (BUNKER WIRE - MOPS SINGAPORE 0.5%)",
-            "labels": [],
-            "series": [],
-        },
     }
 
 
 def _load_report_grid(report_date):
+    from services.sheets_cache import GRID_TTL_SECONDS, cache_get, cache_set
+
+    key = f"report_grid:{report_date.isoformat()}"
+    cached = cache_get(key)
+    if cached is not None:
+        return cached
     spreadsheet = open_spreadsheet()
     worksheet = find_report_worksheet(spreadsheet, report_date)
     if worksheet is None:
-        return None, None
+        result = (None, None)
+        cache_set(key, result, GRID_TTL_SECONDS)
+        return result
     grid = worksheet.get(REPORT_GRID_RANGE) or []
-    return worksheet.title, grid
+    result = (worksheet.title, grid)
+    cache_set(key, result, GRID_TTL_SECONDS)
+    return result
 
 
 def connection_status() -> dict[str, Any]:
-    sheets_ok, sheets_label = sheets_status()
-    gmail_ok, gmail_label = gmail_status()
+    from services.perf import timed
+
+    with timed("gmail status"):
+        gmail_ok, gmail_label = gmail_status()
+    with timed("google sheets status"):
+        sheets_ok, sheets_label = sheets_status()
     title = ""
     if sheets_ok:
         try:
@@ -173,8 +233,17 @@ def connection_status() -> dict[str, Any]:
     }
 
 
-def build_preview(*, sync_sheet: bool = False) -> dict[str, Any]:
-    status = connection_status()
+def build_preview(*, sync_sheet: bool = False, include_status: bool = True) -> dict[str, Any]:
+    from services.perf import timed
+    from services.sheets_cache import cache_clear
+
+    if sync_sheet:
+        cache_clear()
+
+    status = None
+    if include_status:
+        with timed("connection status"):
+            status = connection_status()
     payload: dict[str, Any] = {
         "status": status,
         "meta": None,
@@ -187,16 +256,17 @@ def build_preview(*, sync_sheet: bool = False) -> dict[str, Any]:
         "synced": False,
         "is_update": None,
     }
-    if not status["sheets_ok"]:
+    if include_status and status and not status["sheets_ok"]:
         payload["error"] = "Google Sheets is not connected."
         return payload
 
     try:
         if sync_sheet:
-            ensure_input_sheet(refresh_auto=True)
-            record = load_input_data()
+            with timed("input sheet sync"):
+                ensure_input_sheet(refresh_auto=True)
+                record = load_input_data(refresh_auto=True, bypass_cache=True)
         else:
-            record = load_input_data()
+            record = load_input_data(refresh_auto=False)
     except DataServiceError as exc:
         payload["error"] = str(exc)
         return payload
@@ -217,18 +287,11 @@ def build_preview(*, sync_sheet: bool = False) -> dict[str, Any]:
 
     report_date = record.report_date
     extras = record.extra_cells or {}
-    exists = False
-    try:
-        exists = dated_report_exists(report_date)
-    except Exception:
-        exists = False
 
     inputs = dict(record.inputs)
-    worldwide = str(inputs.get(KOREA_WORLDWIDE_COMMENT_KEY, "") or "").strip()
-    korea = _comment_from_inputs(inputs, KOREA_COMMENT_SOURCE_KEY)
+    korea_world = str(inputs.get(KOREA_WORLDWIDE_COMMENT_KEY) or inputs.get("comment_korea") or "").strip()
     comments = {
-        "korea": korea,
-        "korea_worldwide": _tbn(worldwide or korea),
+        "korea_worldwide": _tbn(korea_world),
         "singapore": _comment_from_inputs(inputs, "comment_singapore"),
         "china": _comment_from_inputs(inputs, "comment_china"),
         "japan": _comment_from_inputs(inputs, "comment_japan"),
@@ -237,14 +300,17 @@ def build_preview(*, sync_sheet: bool = False) -> dict[str, Any]:
             for item in STRATEGY_FIELDS
         ],
     }
+    payload["supplier_premiums"] = _supplier_premiums(inputs)
 
     grid_date = report_date
     sheet_title = format_sheet_name(report_date)
     title, grid = (None, None)
     try:
-        title, grid = _load_report_grid(report_date)
+        with timed("chart data build"):
+            title, grid = _load_report_grid(report_date)
     except Exception:
         title, grid = None, None
+    exists = grid is not None
     if grid is None:
         latest = None
         try:
@@ -265,30 +331,36 @@ def build_preview(*, sync_sheet: bool = False) -> dict[str, Any]:
     if grid:
         getter = _grid_getter(grid)
         payload["charts"] = {
-            "korea_premium": korea_premium_chart(getter),
-            "worldwide_vlsfo": worldwide_vlsfo_chart(getter),
-            "spread": spread_trend_chart(getter),
+            "korea_premium": _overlay_this_week_premium(korea_premium_chart(getter), inputs),
+            "worldwide_vlsfo": _overlay_this_week_worldwide(worldwide_vlsfo_chart(getter), inputs),
         }
         if exists or sync_sheet:
-            for item in COMMENT_FIELDS:
-                text = "\n".join(
-                    str(_grid_value(grid, cell) or "").strip()
-                    for cell in item.cells
-                    if str(_grid_value(grid, cell) or "").strip()
-                )
-                if item.key == "comment_korea":
-                    comments["korea"] = _tbn(text)
-                elif item.key == "comment_korea_worldwide":
-                    comments["korea_worldwide"] = _tbn(text or comments["korea"])
-                elif item.key == "comment_singapore":
-                    comments["singapore"] = _tbn(text)
-                elif item.key == "comment_china":
-                    comments["china"] = _tbn(text)
-                elif item.key == "comment_japan":
-                    comments["japan"] = _tbn(text)
             comments["strategy"] = [
                 _tbn(_grid_value(grid, item.cell)) for item in STRATEGY_FIELDS
             ]
+
+    korea_chart = payload["charts"].get("korea_premium") or _empty_charts()["korea_premium"]
+    if not korea_chart.get("series"):
+        korea_chart = {
+            "title": "Korea Major 4 Refiners - VLSFO Premium Trends",
+            "labels": ["This week"],
+            "series": [
+                {"name": INPUT_NUMBER_LABELS.get(key, key), "data": [None]}
+                for key in PREMIUM_INPUT_KEYS
+            ],
+        }
+    payload["charts"]["korea_premium"] = _overlay_this_week_premium(korea_chart, inputs)
+    world_chart = payload["charts"].get("worldwide_vlsfo") or _empty_charts()["worldwide_vlsfo"]
+    if not world_chart.get("series"):
+        world_chart = {
+            "title": "Worldwide Ports - VLSFO Bunker Price Trend",
+            "labels": ["This week"],
+            "series": [
+                {"name": name, "data": [None]}
+                for name in ("Korea-South", "Singapore", "Nagoya", "Zhoushan")
+            ],
+        }
+    payload["charts"]["worldwide_vlsfo"] = _overlay_this_week_worldwide(world_chart, inputs)
 
     to_list, cc_list = [], []
     recipients_warning = None
@@ -302,7 +374,10 @@ def build_preview(*, sync_sheet: bool = False) -> dict[str, Any]:
 
     payload["meta"] = {
         "report_date": report_date.isoformat(),
-        "report_title": format_report_title(report_date),
+        "report_date_display": format_data_reference_display(report_date),
+        "report_title": "WEEKLY BUNKERING REPORT",
+        "report_title_full": format_report_title(report_date),
+        "updated_display": format_data_reference_display(record.data_reference_date),
         "sheet_name": sheet_title,
         "pricing_month": _pricing_label(record),
         "data_reference_date": format_data_reference_display(record.data_reference_date),
@@ -314,6 +389,7 @@ def build_preview(*, sync_sheet: bool = False) -> dict[str, Any]:
         "date_warning": _date_warning(report_date),
     }
     payload["comments"] = comments
+    payload["supplier_premiums"] = payload.get("supplier_premiums") or _supplier_premiums(inputs)
     payload["email"] = {
         "to": "\n".join(to_list),
         "cc": "\n".join(cc_list),
@@ -361,7 +437,7 @@ def public_preview(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def create_report_files() -> dict[str, Any]:
-    """Re-read Google Sheets, write the dated tab, then generate PDF."""
+    """Re-read Google Sheets, write the dated tab, then generate Excel (no Excel-COM PDF)."""
     payload = build_preview(sync_sheet=True)
     if payload.get("error"):
         return payload
@@ -386,7 +462,7 @@ def create_report_files() -> dict[str, Any]:
         result = generate_market_report(
             record.report_date,
             record.inputs,
-            export_pdf=True,
+            export_pdf=False,
             pricing_month=_pricing_month(record),
             extra_cells=extra_cells,
             data_reference_date=record.data_reference_date,
@@ -398,18 +474,77 @@ def create_report_files() -> dict[str, Any]:
         payload["error"] = f"Report generation failed: {exc}"
         return payload
 
-    pdf_name = format_pdf_filename(record.report_date)
-    pdf_path = str(result.pdf_path) if result.pdf_path else None
-    if pdf_path and Path(pdf_path).name != pdf_name:
-        pdf_path = None
     payload["files"] = _file_status(record.report_date)
-    if pdf_path and Path(pdf_path).exists():
-        payload["files"]["pdf"] = Path(pdf_path).name
-        payload["files"]["has_pdf"] = True
     if result.excel_path and Path(result.excel_path).exists():
         payload["files"]["excel"] = Path(result.excel_path).name
         payload["files"]["has_excel"] = True
     payload["email"]["attachment"] = payload["files"].get("pdf")
     payload["warnings"] = list(result.warnings or [])
-    payload["pdf_page_count"] = result.pdf_page_count
+    payload["pdf_page_count"] = None
     return payload
+
+
+def ensure_excel_file() -> Path:
+    """Return the dated Excel workbook, generating it if it is missing."""
+    record = load_input_data()
+    existing = _safe_output_file(output_excel_path(record.report_date))
+    if existing is not None:
+        return existing
+
+    extra_cells = None
+    try:
+        sheet_record = load_report_data(record.report_date)
+        extra_cells = sheet_record.extra_cells if sheet_record else None
+    except Exception:
+        extra_cells = None
+
+    result = generate_market_report(
+        record.report_date,
+        record.inputs,
+        export_pdf=False,
+        pricing_month=_pricing_month(record),
+        extra_cells=extra_cells,
+        data_reference_date=record.data_reference_date,
+    )
+    path = Path(result.excel_path) if result.excel_path else output_excel_path(record.report_date)
+    saved = _safe_output_file(path)
+    if saved is None:
+        raise GenerateError(
+            "Excel workbook was not saved. "
+            f"Expected path: {path} (exists={path.exists()})"
+        )
+    return saved
+
+
+def build_print_html(preview: dict[str, Any] | None = None) -> str:
+    """Render print.html without Flask so Streamlit can generate the same HTML PDF."""
+    import json
+
+    from jinja2 import Environment, FileSystemLoader
+    from markupsafe import Markup
+
+    if preview is None:
+        preview = public_preview(build_preview(sync_sheet=False, include_status=False))
+
+    env = Environment(
+        loader=FileSystemLoader(str(PROJECT_ROOT / "web" / "templates")),
+        autoescape=True,
+    )
+    env.filters["tojson"] = lambda value: Markup(
+        json.dumps(value).replace("<", "\\u003c")
+    )
+    env.globals["url_for"] = lambda endpoint, filename="", **_kwargs: f"/static/{filename}"
+    return env.get_template("print.html").render(preview=preview)
+
+
+def render_html_preview_pdf(print_url: str | None = None, html: str | None = None) -> Path:
+    """Render the live Report Preview HTML to the dated PDF filename."""
+    from services.html_pdf_service import preview_pdf_path, render_preview_pdf
+
+    record = load_input_data()
+    return render_preview_pdf(
+        output_path=preview_pdf_path(record.report_date),
+        print_url=print_url or "http://127.0.0.1:8502/print",
+        html=html if html is not None else build_print_html(),
+        static_root=PROJECT_ROOT / "web" / "static",
+    )

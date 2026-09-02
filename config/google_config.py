@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
 from config.paths import PROJECT_ROOT
-from config.runtime import is_hosted
+from config.runtime import is_hosted, is_render
 
 _DOTENV_LOADED = False
 TOKEN_URI = "https://oauth2.googleapis.com/token"
@@ -54,7 +55,14 @@ def _load_dotenv() -> None:
 
 
 def _st_secrets():
+    """Only read Streamlit secrets inside a Streamlit script run. Flask/Render use env vars."""
+    if is_render() or "streamlit" not in sys.modules:
+        return None
     try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+
+        if get_script_run_ctx() is None:
+            return None
         import streamlit as st
 
         return st.secrets
@@ -94,6 +102,9 @@ def _compact_secret(value: Any) -> str:
 
 def _secret(name: str, default: str = "") -> str:
     _load_dotenv()
+    env_value = str(os.environ.get(name, default) or default).strip()
+    if env_value:
+        return env_value
     secrets = _st_secrets()
     if secrets is not None:
         try:
@@ -103,7 +114,7 @@ def _secret(name: str, default: str = "") -> str:
                 return text
         except Exception:
             pass
-    return str(os.environ.get(name, default) or default).strip()
+    return ""
 
 
 def _section(name: str) -> dict[str, str]:

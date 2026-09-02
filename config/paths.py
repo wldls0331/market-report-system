@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -9,23 +10,17 @@ DATA_DIR = PROJECT_ROOT / "data"
 
 
 def session_output_dir() -> Path:
-    """Dated Excel/PDF output under project output/. Hosted disks are ephemeral."""
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    """Excel/PDF output. Local: project output/. Hosted: ephemeral temp dir."""
     try:
-        from config.runtime import is_streamlit_cloud
+        from config.runtime import is_hosted
 
-        if not is_streamlit_cloud():
-            return OUTPUT_DIR
-        from streamlit.runtime.scriptrunner import get_script_run_ctx
-
-        ctx = get_script_run_ctx()
-        session_id = getattr(ctx, "session_id", "") if ctx is not None else ""
-        if session_id:
-            path = OUTPUT_DIR / "sessions" / str(session_id)
+        if is_hosted():
+            path = Path(tempfile.gettempdir()) / "market-report-output"
             path.mkdir(parents=True, exist_ok=True)
             return path
     except Exception:
         pass
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     return OUTPUT_DIR
 
 

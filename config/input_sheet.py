@@ -54,11 +54,19 @@ PREMIUM_INPUT_KEYS: tuple[str, ...] = (
     "gs_premium",
 )
 COMMENT_INPUT_KEYS: tuple[str, ...] = (
-    "comment_korea",
+    "comment_korea_worldwide",
     "comment_singapore",
     "comment_china",
     "comment_japan",
 )
+INPUT_COMMENT_LABELS: dict[str, str] = {
+    "comment_korea_worldwide": "South Korea – Southern",
+    "comment_singapore": "Singapore",
+    "comment_china": "China",
+    "comment_japan": "Japan",
+}
+OBSOLETE_INPUT_KEYS: frozenset[str] = frozenset({"comment_korea"})
+PREMIUM_INPUT_HINT = "VLSFO/HSFO e.g. 80/120. Chart uses the first number only."
 
 AUTO_REPORT_DATE = "report_date"
 AUTO_PRICING_MONTH = "pricing_month"
@@ -121,16 +129,15 @@ def _comment_by_key() -> dict[str, object]:
 
 def _hint_for_number(key: str) -> str:
     item = _number_by_key()[key]
+    if key in PREMIUM_INPUT_KEYS:
+        return f"{PREMIUM_INPUT_HINT} This Week cell {item.cell}"
     return f"Report cell {item.cell}"
 
 
 def _hint_for_comment(key: str) -> str:
     item = _comment_by_key()[key]
     cells = ", ".join(item.cells)
-    extra = ""
-    if key == "comment_korea":
-        extra = " Also fills Worldwide Korea O31:O33."
-    return f"Report cells {cells}.{extra}"
+    return f"Report cells {cells}."
 
 
 def input_layout() -> tuple[InputRow, ...]:
@@ -220,7 +227,7 @@ def input_layout() -> tuple[InputRow, ...]:
         rows.append(
             InputRow(
                 kind="field",
-                label=item.label,
+                label=INPUT_COMMENT_LABELS.get(key, item.label),
                 key=key,
                 hint=_hint_for_comment(key),
                 editable=True,

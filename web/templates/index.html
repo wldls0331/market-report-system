@@ -5,15 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Market Report</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.8/dist/chart.umd.min.js"></script>
+  <script src="{{ url_for('static', filename='chart.umd.min.js') }}"></script>
 </head>
 <body>
   <header class="topbar">
     <div class="topbar-inner">
       <h1>Market Report</h1>
       <div class="status-group">
-        <span class="status-pill" id="sheets-status">Google Sheets: —</span>
-        <span class="status-pill" id="gmail-status">Gmail: —</span>
+        <span class="status-pill" id="sheets-status">Google Sheets: Checking...</span>
+        <span class="status-pill" id="gmail-status">Gmail: Checking...</span>
       </div>
       <div class="top-actions">
         <button type="button" class="btn" id="btn-refresh">Refresh Data</button>
@@ -25,87 +25,47 @@
   </header>
 
   <main class="page">
+    <div class="page-progress" id="page-progress">
+      <span class="spinner" aria-hidden="true"></span>
+      <span>Loading Market Report...</span>
+    </div>
     <p class="banner" id="message" hidden></p>
 
     <section class="meta-strip" id="meta-strip">
-      <div><span>Report Date</span><strong id="meta-date">—</strong></div>
-      <div><span>Pricing Month</span><strong id="meta-month">—</strong></div>
-      <div><span>This Week Friday</span><strong id="meta-this">—</strong></div>
-      <div><span>Previous Week Friday</span><strong id="meta-prev">—</strong></div>
-      <div><span>Two Weeks Ago Friday</span><strong id="meta-two">—</strong></div>
+      <div><span>Report Date</span><strong id="meta-date" class="is-skeleton">Loading...</strong></div>
+      <div><span>Pricing Month</span><strong id="meta-month" class="is-skeleton">Loading...</strong></div>
+      <div><span>This Week Friday</span><strong id="meta-this" class="is-skeleton">Loading...</strong></div>
+      <div><span>Previous Week Friday</span><strong id="meta-prev" class="is-skeleton">Loading...</strong></div>
+      <div><span>Two Weeks Ago Friday</span><strong id="meta-two" class="is-skeleton">Loading...</strong></div>
     </section>
 
-    <article class="report-page" id="page-1">
-      <header class="report-banner">
-        <h2 id="report-title">WEEKLY BUNKERING REPORT</h2>
-      </header>
-      <div class="split">
-        <section class="panel">
-          <h3>Korea Major 4 Refiners - VLSFO Premium Trends</h3>
-          <div class="chart-wrap">
-            <canvas id="chart-korea"></canvas>
-          </div>
-        </section>
-        <section class="panel">
-          <h3>Korea Bunker Market</h3>
-          <p class="commentary" id="comment-korea">TBN</p>
-          <div class="strategy" id="strategy-block"></div>
-        </section>
-      </div>
-    </article>
+    {% include "report_body.html" %}
 
-    <article class="report-page" id="page-2">
-      <header class="report-banner">
-        <h2>Worldwide Market</h2>
-      </header>
-      <div class="split">
-        <section class="panel">
-          <h3>Worldwide Ports - VLSFO Bunker Price Trend</h3>
-          <div class="chart-wrap">
-            <canvas id="chart-world"></canvas>
-          </div>
-        </section>
-        <section class="panel">
-          <h3>Worldwide Market for this week</h3>
-          <div class="comment-block">
-            <h4>South Korea</h4>
-            <p class="commentary" id="comment-korea-world">TBN</p>
-          </div>
-          <div class="comment-block">
-            <h4>Singapore</h4>
-            <p class="commentary" id="comment-singapore">TBN</p>
-          </div>
-          <div class="comment-block">
-            <h4>China / Zhoushan</h4>
-            <p class="commentary" id="comment-china">TBN</p>
-          </div>
-          <div class="comment-block">
-            <h4>Japan</h4>
-            <p class="commentary" id="comment-japan">TBN</p>
-          </div>
-        </section>
-      </div>
-    </article>
-
-    <article class="report-page" id="page-3">
-      <header class="report-banner">
-        <h2>SPREAD TREND</h2>
-        <p class="subtitle">BUNKER WIRE - MOPS SINGAPORE 0.5%</p>
-      </header>
-      <section class="panel">
-        <div class="chart-wrap tall">
-          <canvas id="chart-spread"></canvas>
+    <section class="card news-card" id="news-card">
+      <div class="news-head">
+        <div>
+          <h3>Market News Summary</h3>
+          <p class="hint" id="news-window">Last 7 days</p>
         </div>
-      </section>
-    </article>
+        <button type="button" class="btn" id="btn-news">Refresh News</button>
+      </div>
+      <div class="news-takeaway" id="news-takeaway" hidden>
+        <h4>Weekly Market Takeaway</h4>
+        <p id="news-takeaway-text"></p>
+      </div>
+      <div class="news-list" id="news-list"></div>
+      <p class="hint news-status" id="news-status">
+        <span class="inline-loading"><span class="spinner spinner-sm"></span> Loading recent market news...</span>
+      </p>
+    </section>
 
     <section class="card actions-card">
       <h3>Report</h3>
-      <p class="hint" id="report-hint">Create / Update Report writes INPUT into the dated Google sheet and generates the PDF. It does not send email.</p>
+      <p class="hint" id="report-hint">Create / Update Report writes INPUT into the dated Google sheet and generates Excel. Download PDF saves the Report Preview as a 2-page A4 PDF. Neither action sends email.</p>
       <div class="action-row">
         <button type="button" class="btn primary" id="btn-create">Create / Update Report</button>
-        <a class="btn" id="btn-pdf" href="/api/download/pdf">Download PDF</a>
-        <a class="btn" id="btn-excel" href="/api/download/excel">Download Excel</a>
+        <button type="button" class="btn" id="btn-pdf">Download PDF</button>
+        <button type="button" class="btn" id="btn-excel">Download Excel</button>
       </div>
     </section>
 

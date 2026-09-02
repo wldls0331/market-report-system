@@ -2,8 +2,24 @@ services:
   - type: web
     name: market-report-system
     runtime: python
-    buildCommand: pip install -r requirements.txt
+    plan: starter
+    buildCommand: pip install -r requirements.txt && python -m playwright install --with-deps chromium
     startCommand: gunicorn server:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 180
+    healthCheckPath: /
     envVars:
       - key: PYTHON_VERSION
         value: "3.12.8"
+      - key: GOOGLE_SHEET_ID
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_REFRESH_TOKEN
+        sync: false
+      - key: GMAIL_CLIENT_ID
+        sync: false
+      - key: GMAIL_CLIENT_SECRET
+        sync: false
+      - key: GMAIL_REFRESH_TOKEN
+        sync: false

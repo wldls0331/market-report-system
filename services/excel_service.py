@@ -14,6 +14,7 @@ from config.cell_mapping import (
     DATE_CELLS,
     EXPECTED_PDF_PAGES,
     FORMULA_CELLS,
+    KOREA_BUNKER_MARKET_CELLS,
     KOREA_COMMENT_SOURCE_KEY,
     KOREA_WORLDWIDE_COMMENT_KEY,
     NUMBER_FIELDS,
@@ -24,11 +25,12 @@ from config.cell_mapping import (
     STRATEGY_FIELDS,
     TITLE_CELL,
     WORLDWIDE_NEW_POINT_CELLS,
+    WORLDWIDE_THIS_WEEK_CELLS,
     all_mapped_cells,
     chart_window_cells,
 )
-from config.paths import OUTPUT_DIR, find_template, session_output_dir
-from services.chart_service import shift_weekly_chart_window
+from config.paths import find_template, session_output_dir
+from services.supplier_premium_service import parse_supplier_premium
 from services.comment_service import TBN, compose_comment_lines, compose_strategy_text
 from services.pdf_service import (
     PdfExportError,
@@ -145,10 +147,10 @@ def report_exists_for_date(report_date: dt.date) -> bool:
 
 def resolve_source_workbook() -> Path:
     template = find_template()
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    out_dir = session_output_dir()
     outputs = [
         path
-        for path in OUTPUT_DIR.glob("*_Market Report.xlsx")
+        for path in out_dir.glob("*_Market Report.xlsx")
         if path.is_file() and not path.name.startswith("~$")
     ]
     if not outputs:
@@ -275,6 +277,31 @@ def _write_worldwide_new_point(write_number, inputs: dict[str, Any]) -> None:
         write_number(address, parse_optional_number(inputs.get(key)))
 
 
+def _write_worldwide_this_week(write_number, inputs: dict[str, Any]) -> None:
+    for address, key in WORLDWIDE_THIS_WEEK_CELLS.items():
+        write_number(address, parse_optional_number(inputs.get(key)))
+
+
+def _overlay_skip_addresses() -> set[str]:
+    skip = set(KOREA_BUNKER_MARKET_CELLS)
+    skip.update(item.cell for item in NUMBER_FIELDS if item.section == "premium")
+    skip.update(WORLDWIDE_THIS_WEEK_CELLS)
+    return skip
+
+
+def _write_premium_this_week(write_number, inputs: dict[str, Any]) -> None:
+    """This Week (F23:F26) uses VLSFO only. HSFO is parsed but not written here."""
+    for item in NUMBER_FIELDS:
+        if item.section != "premium":
+            continue
+        write_number(item.cell, parse_supplier_premium(inputs.get(item.key))["vlsfo"])
+
+
+def _clear_korea_bunker_market(write_text) -> None:
+    for address in KOREA_BUNKER_MARKET_CELLS:
+        write_text(address, None)
+
+
 def _write_typed_openpyxl(worksheet, address: str, value: Any) -> None:
     if address in FORMULA_CELLS:
         return
@@ -303,6 +330,8 @@ def _overlay_extra_cells_openpyxl(worksheet, extra_cells: dict[str, Any] | None)
     if not extra_cells:
         return
     for address, value in extra_cells.items():
+        if address in _overlay_skip_addresses():
+            continue
         _write_typed_openpyxl(worksheet, address, value)
 
 
@@ -310,6 +339,8 @@ def _overlay_extra_cells_com(com_ws, extra_cells: dict[str, Any] | None) -> None
     if not extra_cells:
         return
     for address, value in extra_cells.items():
+        if address in _overlay_skip_addresses():
+            continue
         _write_typed_com(com_ws, address, value)
 
 
@@ -334,6 +365,8 @@ def _apply_values(
     worksheet[TITLE_CELL].value = format_report_title(report_date)
 
     for item in NUMBER_FIELDS:
+        if item.section == "premium":
+            continue
         value = parse_optional_number(inputs.get(item.key))
         _write_number(worksheet, item.cell, value)
         if item.label_cell and item.label_template:
@@ -350,9 +383,9 @@ def _apply_values(
         )
 
     comment_inputs = dict(inputs)
-    worldwide = str(inputs.get(KOREA_WORLDWIDE_COMMENT_KEY, "") or "").strip()
-    comment_inputs[KOREA_WORLDWIDE_COMMENT_KEY] = worldwide or inputs.get(KOREA_COMMENT_SOURCE_KEY, "")
     for item in COMMENT_FIELDS:
+        if item.key == KOREA_COMMENT_SOURCE_KEY:
+            continue
         lines = compose_comment_lines(comment_inputs.get(item.key, ""), len(item.cells))
         for address, line in zip(item.cells, lines):
             _write_text(worksheet, address, line)
@@ -364,6 +397,15 @@ def _apply_values(
         month=pricing_month.full_name
     )
     _overlay_extra_cells_openpyxl(worksheet, extra_cells)
+    _write_premium_this_week(
+        lambda address, value: _write_number(worksheet, address, value),
+        inputs,
+    )
+    _write_worldwide_this_week(
+        lambda address, value: _write_number(worksheet, address, value),
+        inputs,
+    )
+    _clear_korea_bunker_market(lambda address, value: _write_text(worksheet, address, value))
 
 
 def _excel_serial_date(date: dt.date) -> int:
@@ -413,6 +455,8 @@ def _apply_values_com(
     _write_report_title_com(com_ws, report_date)
 
     for item in NUMBER_FIELDS:
+        if item.section == "premium":
+            continue
         value = parse_optional_number(inputs.get(item.key))
         _write_com_value(com_ws, item.cell, value)
         if item.label_cell and item.label_template:
@@ -429,9 +473,9 @@ def _apply_values_com(
         )
 
     comment_inputs = dict(inputs)
-    worldwide = str(inputs.get(KOREA_WORLDWIDE_COMMENT_KEY, "") or "").strip()
-    comment_inputs[KOREA_WORLDWIDE_COMMENT_KEY] = worldwide or inputs.get(KOREA_COMMENT_SOURCE_KEY, "")
     for item in COMMENT_FIELDS:
+        if item.key == KOREA_COMMENT_SOURCE_KEY:
+            continue
         lines = compose_comment_lines(comment_inputs.get(item.key, ""), len(item.cells))
         for address, line in zip(item.cells, lines):
             _write_com_value(com_ws, address, line)
@@ -445,6 +489,15 @@ def _apply_values_com(
         SALES_ASSUMPTION_HEADER_TEMPLATE.format(month=pricing_month.full_name),
     )
     _overlay_extra_cells_com(com_ws, extra_cells)
+    _write_premium_this_week(
+        lambda address, value: _write_com_value(com_ws, address, value),
+        inputs,
+    )
+    _write_worldwide_this_week(
+        lambda address, value: _write_com_value(com_ws, address, value),
+        inputs,
+    )
+    _clear_korea_bunker_market(lambda address, value: _write_com_value(com_ws, address, value))
 
 
 def _validate_mapping_com(com_ws) -> None:
@@ -490,7 +543,7 @@ def generate_market_report(
     data_reference_date = data_reference_date or previous_week_last_working_day(report_date)
     month = pricing_month or default_pricing_month(report_date)
 
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    session_output_dir()
     excel_path = output_excel_path(report_date)
     pdf_path = session_output_dir() / format_pdf_filename(report_date)
     new_sheet_name = format_sheet_name(report_date)
@@ -558,18 +611,36 @@ def generate_market_report(
 
     try:
         if excel_com_available():
-            page_count = _generate_with_com(
-                excel_path=excel_path,
-                pdf_path=pdf_path if export_pdf else None,
-                report_date=report_date,
-                data_reference_date=data_reference_date,
-                previous_name=None if is_update else previous.name,
-                target_sheet_name=target_sheet_name,
-                inputs=inputs,
-                pricing_month=month,
-                is_update=is_update,
-                extra_cells=extra_cells,
-            )
+            try:
+                page_count = _generate_with_com(
+                    excel_path=excel_path,
+                    pdf_path=pdf_path if export_pdf else None,
+                    report_date=report_date,
+                    data_reference_date=data_reference_date,
+                    previous_name=None if is_update else previous.name,
+                    target_sheet_name=target_sheet_name,
+                    inputs=inputs,
+                    pricing_month=month,
+                    is_update=is_update,
+                    extra_cells=extra_cells,
+                )
+            except Exception as com_exc:
+                if export_pdf:
+                    raise
+                warnings.append(
+                    f"Excel COM failed ({com_exc}); the workbook was written with openpyxl instead."
+                )
+                _generate_with_openpyxl(
+                    excel_path=excel_path,
+                    report_date=report_date,
+                    data_reference_date=data_reference_date,
+                    previous_name=None if is_update else previous.name,
+                    target_sheet_name=target_sheet_name,
+                    inputs=inputs,
+                    pricing_month=month,
+                    is_update=is_update,
+                    extra_cells=extra_cells,
+                )
             if export_pdf and page_count is not None and page_count != EXPECTED_PDF_PAGES:
                 warnings.append(
                     f"PDF has {page_count} page(s). The reference layout is {EXPECTED_PDF_PAGES} pages. "
@@ -610,23 +681,12 @@ def generate_market_report(
             else:
                 pdf_path = None
     except Exception:
-        # On create failure after a fresh copy, remove the incomplete output.
-        # Never delete an update target, templates, or a pre-existing workbook.
-        if (
-            not is_update
-            and created_fresh_copy
-            and excel_path.exists()
-            and excel_path.resolve() != template.resolve()
-            and excel_path.resolve() != source.resolve()
-        ):
-            excel_path.unlink()
-        if (
-            not is_update
-            and created_fresh_copy
-            and pdf_path is not None
-            and pdf_path.exists()
-        ):
-            pdf_path.unlink()
+        # Keep a saved workbook even if a later step fails. Only drop empty copies.
+        try:
+            if created_fresh_copy and excel_path.exists() and excel_path.stat().st_size == 0:
+                excel_path.unlink()
+        except OSError:
+            pass
         raise
 
     created_pdf = pdf_path if (export_pdf and pdf_path and pdf_path.exists()) else None
